@@ -93,7 +93,7 @@ BEGIN
             VALUE "FileDescription", "type_the_clipboard" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "type_the_clipboard" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.example. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 io.github.vinaykhare. All rights reserved." "\0"
             VALUE "OriginalFilename", "type_the_clipboard.exe" "\0"
             VALUE "ProductName", "type_the_clipboard" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
