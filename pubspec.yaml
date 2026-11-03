@@ -41,6 +41,13 @@ dependencies:
   cupertino_icons: ^1.0.8
   otp: ^3.1.5
   flutter_dotenv: ^6.0.1
+  shared_preferences: ^2.5.3
+  http: ^1.2.2
+  keepass_flutter:
+    git:
+      url: https://github.com/ManyMath/ManyKee.git
+      path: packages/keepass_flutter
+      ref: main
 
 dev_dependencies:
   flutter_test:
