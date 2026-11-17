@@ -26,7 +26,8 @@ flutter test
 - `lib/views/entry_form_dialog.dart` — modal form for creating and editing KeePass entries (includes an optional Auto-Type sequence field).
 - `lib/views/ai_view.dart` — active-window text capture, LLM task (presets + command box), follow-up refine, type / type-as-chat / copy / keep-for-reading, cancel.
 - `lib/views/shortcuts_dialog.dart` — read-only reference of the global hotkeys and in-app keys.
-- `lib/views/settings_view.dart` — TOTP secret, LLM, and KeePass settings form.
+- `lib/views/settings_view.dart` — TOTP secret, LLM, KeePass, and keyboard-shortcut settings form.
+- `lib/models/hotkey_binding.dart` — parses/formats hotkey strings (`ctrl+alt+space`), builds `hotkey_manager` `HotKey`s, detects duplicate combinations.
 - `lib/services/settings_service.dart` — persisted config (SharedPreferences) with DPAPI-encrypted KeePass master key.
 - `lib/services/keepass_service.dart` — opens `.kdbx` via `keepass_flutter`; matching, entry CRUD, save, Auto-Type sequence resolution.
 - `lib/services/llm_service.dart` — OpenAI-compatible, Gemini, and Anthropic wrappers; `call(text, task:)`, cancellation, vision, short errors.
@@ -37,17 +38,25 @@ flutter test
 - `lib/core/typing_guard.dart` — `TypingGuard.run(task)`; low-level keyboard hook that swallows injected keystrokes.
 
 ## Key behaviour
-- Global hotkeys:
-  - `Ctrl + Shift + Space` — show the app. If the focused window has selected
+- Global hotkeys (all **configurable** in Settings, stored as canonical strings
+  like `ctrl+alt+space` and parsed by `HotkeyBinding`; defaults below):
+  - `Ctrl + Alt + Space` (`HOTKEY_SHOW`) — show the app. If the focused window has selected
     text (detected via UI Automation), opens the AI tab, captures the selection
     and starts the LLM rephrase. Otherwise shows the Clipboard tab.
-  - `Ctrl + Alt + T` — type the current TOTP into the active window.
-  - `Ctrl + Alt + K` — show the Credentials tab with KeePass matches for the active window.
+  - `Ctrl + Alt + T` (`HOTKEY_OTP`) — type the current TOTP into the active window.
+  - `Ctrl + Alt + K` (`HOTKEY_CREDENTIALS`) — show the Credentials tab with KeePass matches for the active window.
+  - `Ctrl + Alt + Shift + A` (`HOTKEY_PASSWORD`) — type **only the password** of
+    the best matching entry into the active window, mirroring KeePassXC. Runs in
+    `_typePasswordIntoTarget`, which never shows/hides the window, so it keeps
+    working when the target is a VDI session that has just logged out.
+  - `_registerHotkey` falls back to the default when the saved value cannot be
+    parsed or registration fails (e.g. another app owns the combination).
+  - Saving Settings re-runs `_initHotkeys()`.
 - Window visibility:
   - The UI does **not** auto-hide when it loses focus.
   - A minimize (`—`) and close (`✕`) button in the header hide the window to the system tray.
   - A keyboard icon in the header opens the shortcuts reference (`ShortcutsDialog`);
-    the combinations are fixed (no rebinding yet).
+    its footer notes that combinations can be changed in Settings.
   - `Esc` also hides the window.
   - After a tab's final operation the window auto-hides to the tray.
 - In-app keyboard navigation (disabled on the Settings tab):
@@ -76,7 +85,7 @@ flutter test
     e-mail), **Type as chat** (line breaks as `Shift+Enter` — Webex, Teams, Slack),
     **Copy**, and **Keep for reading** (a circle-to-search question needs no typing).
     The two typing buttons only appear when the captured window can take input;
-    otherwise only Copy is offered, with a hint to re-open via `Ctrl+Shift+Space`.
+    otherwise only Copy is offered, with a hint to re-open via `Ctrl+Alt+Space`.
   - Approval runs inside `TypingGuard`: injected keystrokes are tagged via
     `InputSimulator.injectedTag` and only *foreign* injected input is swallowed, so
     typing aborts if the target never takes focus and a read-only / unfocusable
@@ -93,6 +102,10 @@ flutter test
     `StateError: Database is closed` on a later rebuild.
   - The Credentials tab also lists all entries, has a filter box, and supports
     add / edit / delete; every change is written back to the `.kdbx` file.
+  - A **Search all** / **Show matches** toggle (`_searchAll`) switches the list
+    between window matches and the whole database, so entries stay findable and
+    editable when an application's window title no longer matches them.
+  - The filter matches title, username, URL, group name, and notes.
   - Executes a KeePass-style Auto-Type sequence via `AutoTypeExecutor`.
   - Sequence resolution (`KeePassService.autoTypeSequenceFor`): entry attribute
     `AutoType` → entry custom-data `AutoType` → (group default, not readable
@@ -112,10 +125,16 @@ flutter test
     `https://litellm.example.cloud/v1`. The model must be the API model id
     (`kimi-latest`), not the display name shown in dashboards.
   - "Open AI tab automatically when text is selected" (`aiAutoCaptureSelection`,
-    default on) controls the `Ctrl+Shift+Space` behaviour above.
+    default on) controls the `Ctrl+Alt+Space` behaviour above.
   - KeePass master password and TOTP secret have working show/hide toggles.
+  - **Keyboard shortcuts** section: four text fields (`_buildHotkeyField`) for
+    show / credentials / OTP / password. Each shows the parsed combination live
+    and flags unparseable input. `_save` validates every field and rejects
+    duplicates before persisting; `onSaved` re-registers the hotkeys.
 
 ## Important notes
+- The product is branded **Typecraft** but the Dart package stays `type_the_clipboard`: the SharedPreferences path is derived from the package name, so renaming it would orphan existing settings in `%APPDATA%\com.example\type_the_clipboard`.
+- The exe is `typecraft.exe`. Set it with `set_target_properties(... OUTPUT_NAME "typecraft")` in `windows/runner/CMakeLists.txt`; do **not** change `BINARY_NAME`/`project()` in `windows/CMakeLists.txt` — the Flutter build scaffolding resolves `$<TARGET_FILE_DIR:${BINARY_NAME}>` and fails if they differ from the project name.
 - KeePass integration uses `keepass_flutter` from git (`https://github.com/ManyMath/ManyKee.git`, path `packages/keepass_flutter`) because the pub.dev archive is missing the required Rust crate.
 - `keepass_flutter`'s FFI exposes **no** Auto-Type accessor (no `default_sequence`, no group `DefaultAutoTypeSequence`) even though `keepass-rs` parses it. A sequence stored natively in KeePassXC therefore cannot be read; this app stores its own in the entry attribute `AutoType` (`keepassAutoTypeKey` in `entry_form_dialog.dart`) and falls back to a non-submitting default. Fixing this properly needs an upstream FFI addition.
 - `powershell -Command` treats everything after the script as commands, **not** `$args`. Pass values by interpolating quoted literals into the script (see `ScreenCaptureService._encodeScript`, `InputSimulator.hasSelectedText`).

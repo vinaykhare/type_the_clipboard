@@ -16,6 +16,11 @@ add_executable(${BINARY_NAME} WIN32
   "runner.exe.manifest"
 )
 
+# Ship the product as "typecraft.exe" while keeping the internal CMake target
+# name equal to the `project()` name, which the Flutter build scaffolding
+# requires (it resolves `$<TARGET_FILE_DIR:${BINARY_NAME}>`).
+set_target_properties(${BINARY_NAME} PROPERTIES OUTPUT_NAME "typecraft")
+
 # Apply the standard set of build settings. This can be removed for applications
 # that need different build settings.
 apply_standard_settings(${BINARY_NAME})

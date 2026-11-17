@@ -4,6 +4,9 @@ project(type_the_clipboard LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
+# NOTE: must match the `project()` name above — the Flutter/plugin scaffolding
+# resolves `$<TARGET_FILE_DIR:${BINARY_NAME}>`, so the product is renamed to
+# "typecraft.exe" via OUTPUT_NAME in windows/runner/CMakeLists.txt instead.
 set(BINARY_NAME "type_the_clipboard")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent

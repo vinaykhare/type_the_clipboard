@@ -8,12 +8,14 @@ class ShortcutsDialog extends StatelessWidget {
   const ShortcutsDialog({super.key});
 
   static const List<({String keys, String action})> _global = [
-    (keys: 'Ctrl + Shift + Space', action: 'Show the app. If text is selected '
+    (keys: 'Ctrl + Alt + Space', action: 'Show Typecraft. If text is selected '
         'in the focused window, open the AI tab with that text captured.'),
     (keys: 'Ctrl + Alt + K', action: 'Open the Credentials tab with KeePass '
         'matches for the current window.'),
     (keys: 'Ctrl + Alt + T', action: 'Type the current OTP into the focused '
         'window.'),
+    (keys: 'Ctrl + Alt + Shift + A', action: 'Type only the password of the '
+        'best matching KeePass entry, without opening the app.'),
   ];
 
   static const List<({String keys, String action})> _inApp = [
@@ -56,7 +58,7 @@ class ShortcutsDialog extends StatelessWidget {
               for (final item in _inApp) _row(item.keys, item.action),
               const SizedBox(height: 12),
               const Text(
-                'Shortcut combinations cannot be changed yet.',
+                'Combinations can be changed in Settings.',
                 style: TextStyle(color: Color(0xFF585B70), fontSize: 9),
               ),
             ],

@@ -23,6 +23,17 @@ class SettingsService {
   static const String _keyKeepassDbPath = 'KEEPASS_DB_PATH';
   static const String _keyKeepassMasterKey = 'KEEPASS_MASTER_KEY';
   static const String _keyKeepassKeyFilePath = 'KEEPASS_KEY_FILE_PATH';
+  static const String _keyHotkeyShow = 'HOTKEY_SHOW';
+  static const String _keyHotkeyCredentials = 'HOTKEY_CREDENTIALS';
+  static const String _keyHotkeyOtp = 'HOTKEY_OTP';
+  static const String _keyHotkeyPassword = 'HOTKEY_PASSWORD';
+
+  /// Default hotkeys as `modifier+...+key` strings, parsed by
+  /// `HotkeyBinding.parse`.
+  static const String defaultHotkeyShow = 'ctrl+alt+space';
+  static const String defaultHotkeyCredentials = 'ctrl+alt+k';
+  static const String defaultHotkeyOtp = 'ctrl+alt+t';
+  static const String defaultHotkeyPassword = 'ctrl+alt+shift+a';
 
   static SettingsService? _instance;
   static SharedPreferences? _prefs;
@@ -78,6 +89,20 @@ class SettingsService {
       _decryptDpApi(_prefs?.getString(_keyKeepassMasterKey)) ??
       _env('KEEPASS_MASTER_KEY');
 
+  /// Global hotkey that shows the app / opens the AI tab with a selection.
+  String get hotkeyShow => _get(_keyHotkeyShow, defaultHotkeyShow);
+
+  /// Global hotkey that opens the Credentials tab.
+  String get hotkeyCredentials =>
+      _get(_keyHotkeyCredentials, defaultHotkeyCredentials);
+
+  /// Global hotkey that types the current OTP.
+  String get hotkeyOtp => _get(_keyHotkeyOtp, defaultHotkeyOtp);
+
+  /// Global hotkey that types the password of the best matching entry.
+  String get hotkeyPassword =>
+      _get(_keyHotkeyPassword, defaultHotkeyPassword);
+
   bool get hasLlmConfig {
     switch (llmProvider) {
       case LlmProvider.openAiCompatible:
@@ -113,6 +138,10 @@ class SettingsService {
     required String keepassDbPath,
     required String keepassMasterKey,
     required String keepassKeyFilePath,
+    String? hotkeyShow,
+    String? hotkeyCredentials,
+    String? hotkeyOtp,
+    String? hotkeyPassword,
   }) async {
     final encryptedMasterKey = keepassMasterKey.isNotEmpty
         ? _encryptDpApi(keepassMasterKey)
@@ -130,6 +159,12 @@ class SettingsService {
       _prefs!.setString(_keyKeepassDbPath, keepassDbPath),
       _prefs!.setString(_keyKeepassKeyFilePath, keepassKeyFilePath),
       _prefs!.setString(_keyKeepassMasterKey, encryptedMasterKey ?? ''),
+      if (hotkeyShow != null) _prefs!.setString(_keyHotkeyShow, hotkeyShow),
+      if (hotkeyCredentials != null)
+        _prefs!.setString(_keyHotkeyCredentials, hotkeyCredentials),
+      if (hotkeyOtp != null) _prefs!.setString(_keyHotkeyOtp, hotkeyOtp),
+      if (hotkeyPassword != null)
+        _prefs!.setString(_keyHotkeyPassword, hotkeyPassword),
     ];
 
     await Future.wait(updates);

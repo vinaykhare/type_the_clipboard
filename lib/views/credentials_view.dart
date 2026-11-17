@@ -44,6 +44,9 @@ class CredentialsViewState extends State<CredentialsView>
   String? _error;
   String _filter = '';
 
+  /// When true the list ignores the window match and covers the whole database.
+  bool _searchAll = false;
+
   @override
   void initState() {
     super.initState();
@@ -74,13 +77,17 @@ class CredentialsViewState extends State<CredentialsView>
   Future<void> reload() => _loadEntries();
 
   List<KeePassEntryRef> get _visibleEntries {
+    // "Search all" ignores the window match, so entries can be found and
+    // edited even when the window title no longer matches anything.
+    final base = _searchAll ? _allEntries : _entries;
     final query = _filter.trim().toLowerCase();
-    if (query.isEmpty) return _entries;
-    return _entries.where((e) {
+    if (query.isEmpty) return base;
+    return base.where((e) {
       return e.title.toLowerCase().contains(query) ||
           e.username.toLowerCase().contains(query) ||
           e.url.toLowerCase().contains(query) ||
-          e.groupName.toLowerCase().contains(query);
+          e.groupName.toLowerCase().contains(query) ||
+          e.notes.toLowerCase().contains(query);
     }).toList();
   }
 
@@ -460,6 +467,47 @@ class CredentialsViewState extends State<CredentialsView>
             ),
           ),
         ),
+        if (title.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _searchAll
+                        ? 'Searching all ${_allEntries.length} entries'
+                        : 'Showing ${_entries.length} match'
+                            '${_entries.length == 1 ? '' : 'es'} for this window',
+                    style: const TextStyle(
+                      color: Color(0xFF585B70),
+                      fontSize: 9,
+                    ),
+                  ),
+                ),
+                InkWell(
+                  onTap: () => setState(() {
+                    _searchAll = !_searchAll;
+                    _selectedIndex = _searchAll && _allEntries.isNotEmpty
+                        ? 0
+                        : (_entries.isNotEmpty ? 0 : -1);
+                  }),
+                  borderRadius: BorderRadius.circular(4),
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    child: Text(
+                      _searchAll ? 'Show matches' : 'Search all',
+                      style: const TextStyle(
+                        color: Color(0xFF89B4FA),
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         if (_error != null)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),

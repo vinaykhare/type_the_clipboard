@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'package:type_the_clipboard/models/hotkey_binding.dart';
 import 'package:type_the_clipboard/models/llm_provider.dart';
 import 'package:type_the_clipboard/services/keepass_service.dart';
 import 'package:type_the_clipboard/services/llm_service.dart';
@@ -29,12 +30,17 @@ class _SettingsViewState extends State<SettingsView> {
   late final TextEditingController _dbPathController;
   late final TextEditingController _dbKeyFileController;
   late final TextEditingController _dbPasswordController;
+  late final TextEditingController _hotkeyShowController;
+  late final TextEditingController _hotkeyCredentialsController;
+  late final TextEditingController _hotkeyOtpController;
+  late final TextEditingController _hotkeyPasswordController;
 
   bool _obscureSecret = true;
   bool _obscurePassword = true;
   bool _obscureApiKey = true;
   bool _captureScreenshot = false;
   bool _autoCapture = true;
+  String? _hotkeyError;
   LlmProvider _llmProvider = LlmProvider.openAiCompatible;
   String? _testMessage;
   bool _testing = false;
@@ -56,6 +62,11 @@ class _SettingsViewState extends State<SettingsView> {
     _dbPathController = TextEditingController(text: s.keepassDbPath);
     _dbKeyFileController = TextEditingController(text: s.keepassKeyFilePath);
     _dbPasswordController = TextEditingController(text: s.keepassMasterKey);
+    _hotkeyShowController = TextEditingController(text: s.hotkeyShow);
+    _hotkeyCredentialsController =
+        TextEditingController(text: s.hotkeyCredentials);
+    _hotkeyOtpController = TextEditingController(text: s.hotkeyOtp);
+    _hotkeyPasswordController = TextEditingController(text: s.hotkeyPassword);
   }
 
   @override
@@ -68,10 +79,44 @@ class _SettingsViewState extends State<SettingsView> {
     _dbPathController.dispose();
     _dbKeyFileController.dispose();
     _dbPasswordController.dispose();
+    _hotkeyShowController.dispose();
+    _hotkeyCredentialsController.dispose();
+    _hotkeyOtpController.dispose();
+    _hotkeyPasswordController.dispose();
     super.dispose();
   }
 
   Future<void> _save() async {
+    // Validate hotkeys: every field must parse and the four must be distinct.
+    final bindings = <String, HotkeyBinding?>{
+      'Show Typecraft': HotkeyBinding.parse(_hotkeyShowController.text),
+      'Show credentials': HotkeyBinding.parse(_hotkeyCredentialsController.text),
+      'Type current OTP': HotkeyBinding.parse(_hotkeyOtpController.text),
+      'Type password only': HotkeyBinding.parse(_hotkeyPasswordController.text),
+    };
+    for (final entry in bindings.entries) {
+      if (entry.value == null) {
+        setState(() => _hotkeyError =
+            '${entry.key}: "${_hotkeyFieldFor(entry.key).text.trim()}" is not '
+            'a valid combination. Use modifiers + key, e.g. ctrl+alt+space.');
+        return;
+      }
+    }
+    final seen = <String, String>{};
+    for (final entry in bindings.entries) {
+      final canonical = entry.value!.canonical;
+      final clash = seen[canonical];
+      if (clash != null) {
+        setState(() => _hotkeyError =
+            '${entry.key} and $clash use the same combination '
+            '(${entry.value!.display}). Pick different ones.');
+        return;
+      }
+      seen[canonical] = entry.key;
+    }
+
+    setState(() => _hotkeyError = null);
+
     await widget.settings.save(
       secretKey: _secretController.text.trim(),
       llmUrl: _llmUrlController.text.trim(),
@@ -84,6 +129,10 @@ class _SettingsViewState extends State<SettingsView> {
       keepassDbPath: _dbPathController.text.trim(),
       keepassMasterKey: _dbPasswordController.text,
       keepassKeyFilePath: _dbKeyFileController.text.trim(),
+      hotkeyShow: bindings['Show Typecraft']!.canonical,
+      hotkeyCredentials: bindings['Show credentials']!.canonical,
+      hotkeyOtp: bindings['Type current OTP']!.canonical,
+      hotkeyPassword: bindings['Type password only']!.canonical,
     );
     // Connection settings may have changed; drop the cached handle so the
     // Credentials tab reopens with the new path / credentials.
@@ -252,6 +301,67 @@ class _SettingsViewState extends State<SettingsView> {
         ),
       ),
     );
+  }
+
+  /// A hotkey field that shows what the typed combination currently means
+  /// and flags values that cannot be parsed.
+  Widget _buildHotkeyField(
+    TextEditingController controller,
+    String label,
+    String fallback,
+  ) {
+    final binding = HotkeyBinding.parse(controller.text);
+    final hint = binding?.display ?? 'invalid - using $fallback';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: TextField(
+        controller: controller,
+        style: const TextStyle(color: Color(0xFFCDD6F4), fontSize: 12),
+        onChanged: (_) => setState(() {}),
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          labelStyle: const TextStyle(color: Color(0xFFA6ADC8), fontSize: 11),
+          hintStyle: TextStyle(
+            color: binding == null
+                ? const Color(0xFFE78284)
+                : const Color(0xFF585B70),
+            fontSize: 11,
+          ),
+          helperText: binding == null ? null : hint,
+          helperStyle: const TextStyle(color: Color(0xFFA6E3A1), fontSize: 9),
+          filled: true,
+          fillColor: const Color(0xFF181825),
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 10,
+            vertical: 10,
+          ),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Color(0xFF45475A)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: Color(0xFF89B4FA)),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Maps a hotkey label back to its controller, for error messages.
+  TextEditingController _hotkeyFieldFor(String label) {
+    switch (label) {
+      case 'Show Typecraft':
+        return _hotkeyShowController;
+      case 'Show credentials':
+        return _hotkeyCredentialsController;
+      case 'Type current OTP':
+        return _hotkeyOtpController;
+      default:
+        return _hotkeyPasswordController;
+    }
   }
 
   @override
@@ -467,6 +577,45 @@ class _SettingsViewState extends State<SettingsView> {
               ),
             ),
           const SizedBox(height: 16),
+          _buildSectionTitle('Keyboard shortcuts'),
+          const Text(
+            'Global combinations, usable from any application. Format: '
+            'modifiers + key, e.g. ctrl+alt+space. Changes apply after Save.',
+            style: TextStyle(color: Color(0xFF585B70), fontSize: 9),
+          ),
+          const SizedBox(height: 8),
+          _buildHotkeyField(
+            _hotkeyShowController,
+            'Show Typecraft',
+            SettingsService.defaultHotkeyShow,
+          ),
+          _buildHotkeyField(
+            _hotkeyCredentialsController,
+            'Show credentials',
+            SettingsService.defaultHotkeyCredentials,
+          ),
+          _buildHotkeyField(
+            _hotkeyOtpController,
+            'Type current OTP',
+            SettingsService.defaultHotkeyOtp,
+          ),
+          _buildHotkeyField(
+            _hotkeyPasswordController,
+            'Type password only',
+            SettingsService.defaultHotkeyPassword,
+          ),
+          if (_hotkeyError != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                _hotkeyError!,
+                style: const TextStyle(
+                  color: Color(0xFFE78284),
+                  fontSize: 10,
+                ),
+              ),
+            ),
+          const SizedBox(height: 16),
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: const Color(0xFF89B4FA),
@@ -543,6 +692,10 @@ class _KeePassSettingsOverlay implements SettingsService {
     required String keepassDbPath,
     required String keepassMasterKey,
     required String keepassKeyFilePath,
+    String? hotkeyShow,
+    String? hotkeyCredentials,
+    String? hotkeyOtp,
+    String? hotkeyPassword,
   }) {
     throw UnsupportedError('Test overlay cannot save');
   }
@@ -617,6 +770,10 @@ class _LlmSettingsOverlay implements SettingsService {
     required String keepassDbPath,
     required String keepassMasterKey,
     required String keepassKeyFilePath,
+    String? hotkeyShow,
+    String? hotkeyCredentials,
+    String? hotkeyOtp,
+    String? hotkeyPassword,
   }) {
     throw UnsupportedError('Test overlay cannot save');
   }

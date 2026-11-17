@@ -1,4 +1,4 @@
-# Type the Clipboard
+# Typecraft
 
 A small, always-available Windows desktop assistant that types content into the
 window you are already working in — **without** switching to it, hunting for the
@@ -64,7 +64,7 @@ auto-hides while you are reading something in it.
 | **OTP** | Live TOTP code with countdown. Type it into the target with one hotkey. |
 | **Credentials** | Opens your KeePass `.kdbx` directly, matches entries to the current window, and Auto-Types them. Full add / edit / delete. |
 | **AI assistant** | Capture selected text (and optionally a screenshot), run preset or free-form LLM tasks, refine the answer, then type / copy / just read it. |
-| **Global hotkeys** | Three system-wide shortcuts that work from any application. |
+| **Global hotkeys** | Four system-wide shortcuts that work from any application, all configurable in Settings. |
 | **Keyboard-first** | Arrow keys and Enter drive the whole UI; the mouse works too. |
 | **Stays out of the way** | Tray-only, always on top, no focus stealing, no taskbar entry. |
 | **Encrypted secrets** | KeePass master key is stored via Windows DPAPI, bound to your user account. |
@@ -98,15 +98,15 @@ you are told — nothing is typed anywhere else, and the app stays usable.
 1. Copy the entire `Release` build folder somewhere permanent, for example:
 
    ```
-   C:\Apps\winapp\Type the Clipboard\
+   C:\Apps\winapp\Typecraft\
    ```
 
    > **Copy the whole folder, not just the `.exe`.** The app needs
    > `flutter_windows.dll`, `keepass_flutter_native.dll`, the plugin DLLs, and the
-   > `data\` folder next to the executable. Copying only `type_the_clipboard.exe`
+   > `data\` folder next to the executable. Copying only `typecraft.exe`
    > will not start.
 
-2. Run `type_the_clipboard.exe`.
+2. Run `typecraft.exe`.
 
 The window starts hidden. Look for the tray icon, then press **`Ctrl + Shift +
 Space`** to show it.
@@ -189,9 +189,10 @@ Open the built-in reference any time with the **keyboard icon** in the title bar
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl + Shift + Space` | Show the app. If text is selected in the focused window, opens the AI tab with that text already captured. Otherwise opens the Clipboard tab. |
+| `Ctrl + Alt + Space` | Show the app. If text is selected in the focused window, opens the AI tab with that text already captured. Otherwise opens the Clipboard tab. |
 | `Ctrl + Alt + K` | Show the Credentials tab with KeePass entries matched to the current window. |
 | `Ctrl + Alt + T` | Type the current OTP straight into the focused window. |
+| `Ctrl + Alt + Shift + A` | **Type only the password** of the best matching entry, into the focused window, without opening the app. Works even when the target is a VDI session that has just logged out. |
 
 **Inside the app**
 
@@ -202,7 +203,11 @@ Open the built-in reference any time with the **keyboard icon** in the title bar
 | `Enter` | Activate the selected item, or run the AI task. |
 | `Esc` | Hide the window to the tray. |
 
-Shortcut combinations are fixed for now; they cannot be rebound.
+All four global combinations are **configurable** in **⚙ Settings → Keyboard
+shortcuts**. Each field accepts a value such as `ctrl+alt+space`,
+`ctrl+alt+shift+a`, or `ctrl+f5` (modifiers plus one key, case-insensitive). The
+form shows the parsed combination live and refuses to save an invalid or
+duplicated combination. Changes take effect right after **Save**.
 
 ---
 
@@ -280,6 +285,9 @@ The **⋮** menu adds **Fill default**, **Edit entry…**, and **Delete entry…
 - **Fill default** (or double-clicking a row) executes the entry's Auto-Type
   sequence — by default `{USERNAME}{TAB}{PASSWORD}`.
 - The filter box narrows the list; clearing it shows all entries again.
+- **Search all** — when the window title no longer matches your entries (titles
+  change often), click **Search all** to search and edit the *whole* database
+  regardless of the active window. The toggle switches back to **Show matches**.
 
 #### Managing entries
 
@@ -375,7 +383,7 @@ The **Stop** button cancels capture, the in-flight LLM request, and typing — a
 three.
 
 > **Reading vs writing.** The AI tab is not only for rewriting text. Use
-> `Ctrl + Shift + Space` over any screen content, ask *"what does this mean?"*,
+> `Ctrl + Alt + Space` over any screen content, ask *"what does this mean?"*,
 > and choose **Keep for reading** — no text ever reaches the target window.
 
 ---
@@ -416,27 +424,27 @@ They survive moving or reinstalling the app.
 ### Reply to a Teams message
 
 1. Select the message text.
-2. `Ctrl + Shift + Space` — the AI tab opens with the text captured.
+2. `Ctrl + Alt + Space` — the AI tab opens with the text captured.
 3. Click **Rephrase**, or type *"reply politely that I'll send it tomorrow"*.
 4. Click **Type as chat** — lines arrive as `Shift + Enter`, so nothing is sent
    until you press Enter yourself.
 
 ### Understand an error dialog
 
-1. `Ctrl + Shift + Space` anywhere — opens the AI tab.
+1. `Ctrl + Alt + Space` anywhere — opens the AI tab.
 2. Type in the command box: *"What does this error mean and how do I fix it?"*
 3. Run, then choose **Keep for reading**.
 
 ### Clean up an e-mail draft
 
 1. Select the draft body.
-2. `Ctrl + Shift + Space` → **Fix grammar**.
+2. `Ctrl + Alt + Space` → **Fix grammar**.
 3. Refine with *"keep it under 100 words"*.
 4. **Replace selection** — real line breaks, formatting preserved.
 
 ### Reuse something you copied earlier
 
-1. `Ctrl + Shift + Space` — Clipboard tab.
+1. `Ctrl + Alt + Space` — Clipboard tab.
 2. Type a few letters to filter.
 3. `Enter` to paste.
 
@@ -453,6 +461,11 @@ They survive moving or reinstalling the app.
   multi-line text vanished after the first line, you wanted this button.
 - **The AI tab needs no selection** if you attach a screenshot — it can work
   from the image alone.
+- **Password-only typing (`Ctrl + Alt + Shift + A`)** is the VDI-safe path: it
+  types just the password, never opens the window, so it still works when a
+  remote session has just dropped and re-focused.
+- **Rebind any hotkey** in **Settings → Keyboard shortcuts** if a combination
+  clashes with another application.
 - **Refine, don't re-run.** Follow-ups keep context; starting a fresh task
   throws the previous answer away.
 - **Search the Credentials list** by typing in the filter box when matching
@@ -494,7 +507,7 @@ running an older build — rebuild and redeploy the **whole** release folder.
 
 ### The app starts but no window appears
 
-It starts hidden by design. Press `Ctrl + Shift + Space`, or use the tray icon →
+It starts hidden by design. Press `Ctrl + Alt + Space`, or use the tray icon →
 **Settings**.
 
 ### AI requests fail
@@ -571,7 +584,8 @@ Both directions need an upstream FFI addition to fix properly.
 
 - **Clipboard history is capped at 10 items** and is not persisted across
   restarts.
-- **Hotkeys cannot be rebound.** The three combinations are fixed.
+- **One entry at a time.** With several matching entries, the best-scored one is
+  used by the password-only hotkey.
 - **One match is used at a time.** With several matching entries, the best-scored
   one is selected.
 - **MobilePASS automation is out of scope.**
@@ -641,6 +655,7 @@ lib/
     keyboard_navigable.dart         interface for arrow/Enter navigation
     typing_guard.dart               low-level hook containing injected input
   models/
+    hotkey_binding.dart             parse / format / conflict-check hotkeys
     llm_provider.dart               provider enum, default URLs and models
   services/
     settings_service.dart           persisted config, DPAPI secret encryption

@@ -9,6 +9,9 @@ import 'package:window_manager/window_manager.dart';
 
 import 'package:type_the_clipboard/core/keyboard_navigable.dart';
 import 'package:type_the_clipboard/input_simulator.dart';
+import 'package:type_the_clipboard/models/hotkey_binding.dart';
+import 'package:type_the_clipboard/services/auto_type_executor.dart';
+import 'package:type_the_clipboard/services/keepass_service.dart';
 import 'package:type_the_clipboard/services/settings_service.dart';
 import 'package:type_the_clipboard/views/ai_view.dart';
 import 'package:type_the_clipboard/views/clipboard_view.dart';
@@ -93,11 +96,11 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
   // System Tray
   Future<void> _initSystemTray() async {
     await trayManager.setIcon('assets/app_icon.ico');
-    await trayManager.setToolTip('Type the Clipboard');
+    await trayManager.setToolTip('Typecraft');
 
     final menu = Menu(
       items: [
-        MenuItem(key: 'title', label: 'Type the Clipboard'),
+        MenuItem(key: 'title', label: 'Typecraft'),
         MenuItem.separator(),
         MenuItem(key: 'settings', label: 'Settings'),
         MenuItem.separator(),
@@ -132,54 +135,79 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
   // Hotkeys
   Future<void> _initHotkeys() async {
     await hotKeyManager.unregisterAll();
+    final settings = widget.settings;
 
-    // Show app: Ctrl + Shift + Space
-    await hotKeyManager.register(
-      HotKey(
-        key: PhysicalKeyboardKey.space,
-        modifiers: [
-          HotKeyModifier.control,
-          HotKeyModifier.shift,
-        ],
-        scope: HotKeyScope.system,
-      ),
-      keyDownHandler: (_) async {
+    // Show app / AI tab with selection.
+    await _registerHotkey(
+      settings.hotkeyShow,
+      SettingsService.defaultHotkeyShow,
+      (_) async {
         _captureTarget();
         await _showClipboardOrCaptureSelection();
       },
     );
 
-    // Type OTP: Ctrl + Alt + T
-    await hotKeyManager.register(
-      HotKey(
-        key: PhysicalKeyboardKey.keyT,
-        modifiers: [
-          HotKeyModifier.control,
-          HotKeyModifier.alt,
-        ],
-        scope: HotKeyScope.system,
-      ),
-      keyDownHandler: (_) async {
+    // Type the current OTP.
+    await _registerHotkey(
+      settings.hotkeyOtp,
+      SettingsService.defaultHotkeyOtp,
+      (_) async {
         _captureTarget();
         await _typeOtpIntoTarget();
       },
     );
 
-    // Show credentials: Ctrl + Alt + K
-    await hotKeyManager.register(
-      HotKey(
-        key: PhysicalKeyboardKey.keyK,
-        modifiers: [
-          HotKeyModifier.control,
-          HotKeyModifier.alt,
-        ],
-        scope: HotKeyScope.system,
-      ),
-      keyDownHandler: (_) async {
+    // Show the credentials tab.
+    await _registerHotkey(
+      settings.hotkeyCredentials,
+      SettingsService.defaultHotkeyCredentials,
+      (_) async {
         _captureTarget();
         await _showWindow(_credentialsTab);
       },
     );
+
+    // Type only the password of the best matching entry.
+    await _registerHotkey(
+      settings.hotkeyPassword,
+      SettingsService.defaultHotkeyPassword,
+      (_) async {
+        _captureTarget();
+        await _typePasswordIntoTarget();
+      },
+    );
+  }
+
+  /// Registers [configured] as a global hotkey, falling back to [fallback]
+  /// when the saved value is unparseable.
+  Future<void> _registerHotkey(
+    String configured,
+    String fallback,
+    Future<void> Function(HotKey) handler,
+  ) async {
+    final binding =
+        HotkeyBinding.parse(configured) ?? HotkeyBinding.parse(fallback);
+    if (binding == null) return;
+    try {
+      await hotKeyManager.register(binding.toHotKey(), keyDownHandler: handler);
+    } catch (e) {
+      debugPrint('[Hotkeys] failed to register ${binding.display}: $e');
+      // Try the default so the app stays usable after a bad combination
+      // (e.g. one already owned by another application).
+      if (binding.canonical != fallback) {
+        final safe = HotkeyBinding.parse(fallback);
+        if (safe != null) {
+          try {
+            await hotKeyManager.register(
+              safe.toHotKey(),
+              keyDownHandler: handler,
+            );
+          } catch (inner) {
+            debugPrint('[Hotkeys] fallback failed too: $inner');
+          }
+        }
+      }
+    }
   }
 
   void _captureTarget() {
@@ -255,6 +283,64 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
     InputSimulator.focusWindow(_lastTargetHwnd);
     await Future.delayed(const Duration(milliseconds: 250));
     await InputSimulator.typeText(code, delayMs: 10);
+  }
+
+  /// Types only the password of the best entry matching the captured window.
+  ///
+  /// This is the KeePassXC `Ctrl+Alt+Shift+A` behaviour and is deliberately
+  /// independent of the UI: it never shows or hides this window, so it keeps
+  /// working when the target is a VDI session that has just been re-focused.
+  Future<void> _typePasswordIntoTarget() async {
+    final hwnd = _lastTargetHwnd;
+    if (hwnd == 0 || !InputSimulator.isUsableTarget(hwnd)) {
+      await _notify('No target window: click into the field you want to fill, '
+          'then press the shortcut again.');
+      return;
+    }
+
+    final service = KeePassService(widget.settings);
+    final matches = await service.findEntries(_lastTargetTitle);
+    if (matches.isEmpty) {
+      final reason = service.lastError;
+      await _notify(reason != null
+          ? 'KeePass: $reason'
+          : 'No KeePass entry matches "$_lastTargetTitle".');
+      return;
+    }
+
+    final password = matches.first.password;
+    if (password.isEmpty) {
+      await _notify('The matching entry "${matches.first.title}" has no '
+          'password.');
+      return;
+    }
+
+    final ok = await AutoTypeExecutor.execute(
+      '{PASSWORD}',
+      username: matches.first.username,
+      password: password,
+      targetHwnd: hwnd,
+    );
+    if (!ok) {
+      await Clipboard.setData(ClipboardData(text: password));
+      await _notify('The target window would not accept input, so the password '
+          'was copied to the clipboard instead.');
+    }
+  }
+
+  /// Shows a short message without stealing focus from the target window.
+  Future<void> _notify(String message) async {
+    debugPrint('[Typecraft] $message');
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(message),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+    }
   }
 
   KeyboardNavigableView? _currentNavigableView() {
@@ -373,7 +459,7 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
                               color: Colors.transparent,
                               padding: const EdgeInsets.symmetric(vertical: 4),
                               child: const Text(
-                                'Type the Clipboard',
+                                'Typecraft',
                                 style: TextStyle(
                                   color: Color(0xFFCDD6F4),
                                   fontWeight: FontWeight.bold,
@@ -501,7 +587,11 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
                         ),
                         SettingsView(
                           settings: widget.settings,
-                          onSaved: () => setState(() {}),
+                          onSaved: () {
+                            setState(() {});
+                            // Hotkeys may have changed: re-register them.
+                            _initHotkeys();
+                          },
                         ),
                       ],
                     ),
@@ -547,7 +637,7 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
           child: Column(
             children: [
               const Text(
-                'Are you sure you want to exit Type the Clipboard?',
+                'Are you sure you want to exit Typecraft?',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Color(0xFFCDD6F4), fontSize: 13),
               ),
