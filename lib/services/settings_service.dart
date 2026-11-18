@@ -28,6 +28,12 @@ class SettingsService {
   static const String _keyHotkeyOtp = 'HOTKEY_OTP';
   static const String _keyHotkeyPassword = 'HOTKEY_PASSWORD';
 
+  /// Title of the KeePass entry the password-only hotkey should use.
+  ///
+  /// When set, the hotkey types this entry's password regardless of the active
+  /// window title — essential for VDI login screens whose titles change.
+  static const String _keyVdiEntryTitle = 'VDI_ENTRY_TITLE';
+
   /// Default hotkeys as `modifier+...+key` strings, parsed by
   /// `HotkeyBinding.parse`.
   static const String defaultHotkeyShow = 'ctrl+alt+space';
@@ -103,6 +109,11 @@ class SettingsService {
   String get hotkeyPassword =>
       _get(_keyHotkeyPassword, defaultHotkeyPassword);
 
+  /// Pinned KeePass entry title for the password-only hotkey, or empty to
+  /// fall back to window-title matching.
+  String get vdiEntryTitle =>
+      _prefs?.getString(_keyVdiEntryTitle) ?? '';
+
   bool get hasLlmConfig {
     switch (llmProvider) {
       case LlmProvider.openAiCompatible:
@@ -142,6 +153,7 @@ class SettingsService {
     String? hotkeyCredentials,
     String? hotkeyOtp,
     String? hotkeyPassword,
+    String? vdiEntryTitle,
   }) async {
     final encryptedMasterKey = keepassMasterKey.isNotEmpty
         ? _encryptDpApi(keepassMasterKey)
@@ -165,6 +177,8 @@ class SettingsService {
       if (hotkeyOtp != null) _prefs!.setString(_keyHotkeyOtp, hotkeyOtp),
       if (hotkeyPassword != null)
         _prefs!.setString(_keyHotkeyPassword, hotkeyPassword),
+      if (vdiEntryTitle != null)
+        _prefs!.setString(_keyVdiEntryTitle, vdiEntryTitle),
     ];
 
     await Future.wait(updates);

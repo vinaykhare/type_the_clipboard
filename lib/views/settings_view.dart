@@ -6,6 +6,7 @@ import 'package:type_the_clipboard/models/llm_provider.dart';
 import 'package:type_the_clipboard/services/keepass_service.dart';
 import 'package:type_the_clipboard/services/llm_service.dart';
 import 'package:type_the_clipboard/services/settings_service.dart';
+import 'package:type_the_clipboard/startup_helper.dart';
 
 class SettingsView extends StatefulWidget {
   final SettingsService settings;
@@ -33,13 +34,13 @@ class _SettingsViewState extends State<SettingsView> {
   late final TextEditingController _hotkeyShowController;
   late final TextEditingController _hotkeyCredentialsController;
   late final TextEditingController _hotkeyOtpController;
-  late final TextEditingController _hotkeyPasswordController;
 
   bool _obscureSecret = true;
   bool _obscurePassword = true;
   bool _obscureApiKey = true;
   bool _captureScreenshot = false;
   bool _autoCapture = true;
+  bool _autoStart = false;
   String? _hotkeyError;
   LlmProvider _llmProvider = LlmProvider.openAiCompatible;
   String? _testMessage;
@@ -66,7 +67,10 @@ class _SettingsViewState extends State<SettingsView> {
     _hotkeyCredentialsController =
         TextEditingController(text: s.hotkeyCredentials);
     _hotkeyOtpController = TextEditingController(text: s.hotkeyOtp);
-    _hotkeyPasswordController = TextEditingController(text: s.hotkeyPassword);
+    // The registry, not the settings file, is the source of truth here.
+    StartupHelper.isAutoStartEnabled().then((enabled) {
+      if (mounted) setState(() => _autoStart = enabled);
+    });
   }
 
   @override
@@ -82,17 +86,39 @@ class _SettingsViewState extends State<SettingsView> {
     _hotkeyShowController.dispose();
     _hotkeyCredentialsController.dispose();
     _hotkeyOtpController.dispose();
-    _hotkeyPasswordController.dispose();
     super.dispose();
   }
 
+  /// Applies the Windows-startup toggle immediately (it lives in the registry,
+  /// not in the settings file) and reflects the real result.
+  Future<void> _setAutoStart(bool enable) async {
+    setState(() => _autoStart = enable);
+    final ok = await StartupHelper.setAutoStart(enable);
+    final actual = await StartupHelper.isAutoStartEnabled();
+    if (!mounted) return;
+    setState(() => _autoStart = actual);
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            ok
+                ? (enable
+                    ? 'Typecraft will start with Windows.'
+                    : 'Typecraft will no longer start with Windows.')
+                : 'Could not change the startup setting.',
+          ),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+  }
+
   Future<void> _save() async {
-    // Validate hotkeys: every field must parse and the four must be distinct.
+    // Validate hotkeys: every field must parse and the three must be distinct.
     final bindings = <String, HotkeyBinding?>{
       'Show Typecraft': HotkeyBinding.parse(_hotkeyShowController.text),
       'Show credentials': HotkeyBinding.parse(_hotkeyCredentialsController.text),
       'Type current OTP': HotkeyBinding.parse(_hotkeyOtpController.text),
-      'Type password only': HotkeyBinding.parse(_hotkeyPasswordController.text),
     };
     for (final entry in bindings.entries) {
       if (entry.value == null) {
@@ -132,7 +158,6 @@ class _SettingsViewState extends State<SettingsView> {
       hotkeyShow: bindings['Show Typecraft']!.canonical,
       hotkeyCredentials: bindings['Show credentials']!.canonical,
       hotkeyOtp: bindings['Type current OTP']!.canonical,
-      hotkeyPassword: bindings['Type password only']!.canonical,
     );
     // Connection settings may have changed; drop the cached handle so the
     // Credentials tab reopens with the new path / credentials.
@@ -357,10 +382,8 @@ class _SettingsViewState extends State<SettingsView> {
         return _hotkeyShowController;
       case 'Show credentials':
         return _hotkeyCredentialsController;
-      case 'Type current OTP':
-        return _hotkeyOtpController;
       default:
-        return _hotkeyPasswordController;
+        return _hotkeyOtpController;
     }
   }
 
@@ -371,6 +394,12 @@ class _SettingsViewState extends State<SettingsView> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          _buildSectionTitle('Application'),
+          _buildCheckboxRow(
+            'Start Typecraft when Windows starts',
+            _autoStart,
+            _setAutoStart,
+          ),
           _buildSectionTitle('TOTP'),
           _buildTextField(
             _secretController,
@@ -599,10 +628,11 @@ class _SettingsViewState extends State<SettingsView> {
             'Type current OTP',
             SettingsService.defaultHotkeyOtp,
           ),
-          _buildHotkeyField(
-            _hotkeyPasswordController,
-            'Type password only',
-            SettingsService.defaultHotkeyPassword,
+          const Text(
+            'In the Credentials tab: Up/Down to pick an entry, Enter to type '
+            'the Auto-Type sequence, "u" for username only, "p" for password '
+            'only.',
+            style: TextStyle(color: Color(0xFF585B70), fontSize: 9),
           ),
           if (_hotkeyError != null)
             Padding(
@@ -670,6 +700,9 @@ class _KeePassSettingsOverlay implements SettingsService {
   String get keepassMasterKey => _state._dbPasswordController.text;
 
   @override
+  String get vdiEntryTitle => _base.vdiEntryTitle;
+
+  @override
   bool get hasLlmConfig => _base.hasLlmConfig;
 
   @override
@@ -696,6 +729,7 @@ class _KeePassSettingsOverlay implements SettingsService {
     String? hotkeyCredentials,
     String? hotkeyOtp,
     String? hotkeyPassword,
+    String? vdiEntryTitle,
   }) {
     throw UnsupportedError('Test overlay cannot save');
   }
@@ -741,6 +775,9 @@ class _LlmSettingsOverlay implements SettingsService {
   String get keepassMasterKey => _base.keepassMasterKey;
 
   @override
+  String get vdiEntryTitle => _base.vdiEntryTitle;
+
+  @override
   bool get hasLlmConfig {
     switch (llmProvider) {
       case LlmProvider.openAiCompatible:
@@ -774,6 +811,7 @@ class _LlmSettingsOverlay implements SettingsService {
     String? hotkeyCredentials,
     String? hotkeyOtp,
     String? hotkeyPassword,
+    String? vdiEntryTitle,
   }) {
     throw UnsupportedError('Test overlay cannot save');
   }

@@ -82,12 +82,11 @@ void main() {
     });
   });
 
-  test('the four defaults are mutually distinct', () {
+  test('the three defaults are mutually distinct', () {
     const defaults = [
       'ctrl+alt+space',
       'ctrl+alt+k',
       'ctrl+alt+t',
-      'ctrl+alt+shift+a',
     ];
     final bindings = defaults.map(HotkeyBinding.parse).toList();
     expect(bindings.every((b) => b != null), isTrue);

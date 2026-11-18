@@ -27,6 +27,7 @@ class AutoTypeExecutor {
     required String password,
     String? totp,
     int? targetHwnd,
+    bool pasteInsteadOfType = false,
   }) async {
     var typed = false;
     await TypingGuard.run(() async {
@@ -66,19 +67,31 @@ class AutoTypeExecutor {
       Future<void> emitText(String text) async {
         await flushLiteral();
         if (text.isNotEmpty && stillTargeted()) {
-          await InputSimulator.typeText(
-            text,
-            delayMs: 5,
-            shouldContinue: stillTargeted,
-          );
+          if (pasteInsteadOfType) {
+            // Clipboard fallback for targets that reject injected keystrokes
+            // (Citrix/Vmware VDI secure prompts). Caller has already copied
+            // the text to the clipboard.
+            await InputSimulator.pasteViaShortcut();
+            await Future.delayed(const Duration(milliseconds: 120));
+          } else {
+            await InputSimulator.typeText(
+              text,
+              delayMs: 5,
+              shouldContinue: stillTargeted,
+            );
+          }
         }
       }
 
       Future<void> emitKey(int vk) async {
         await flushLiteral();
         if (!stillTargeted()) return;
+        // Clear any modifier the previous character may have left down so a
+        // control key can never be delivered as Shift+Tab / Shift+Enter.
+        InputSimulator.releaseModifiers();
+        await Future.delayed(const Duration(milliseconds: 10));
         InputSimulator.pressKey(vk);
-        await Future.delayed(const Duration(milliseconds: 20));
+        await Future.delayed(const Duration(milliseconds: 30));
       }
 
       while (i < sequence.length) {

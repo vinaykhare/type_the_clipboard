@@ -265,4 +265,10 @@ class OtpViewState extends State<OtpView> implements KeyboardNavigableView {
       ),
     );
   }
+
+  @override
+  Future<bool> typeUsername() async => false;
+
+  @override
+  Future<bool> typePassword() async => false;
 }

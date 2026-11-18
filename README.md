@@ -64,7 +64,7 @@ auto-hides while you are reading something in it.
 | **OTP** | Live TOTP code with countdown. Type it into the target with one hotkey. |
 | **Credentials** | Opens your KeePass `.kdbx` directly, matches entries to the current window, and Auto-Types them. Full add / edit / delete. |
 | **AI assistant** | Capture selected text (and optionally a screenshot), run preset or free-form LLM tasks, refine the answer, then type / copy / just read it. |
-| **Global hotkeys** | Four system-wide shortcuts that work from any application, all configurable in Settings. |
+| **Global hotkeys** | Three system-wide shortcuts that work from any application, all configurable in Settings. |
 | **Keyboard-first** | Arrow keys and Enter drive the whole UI; the mouse works too. |
 | **Stays out of the way** | Tray-only, always on top, no focus stealing, no taskbar entry. |
 | **Encrypted secrets** | KeePass master key is stored via Windows DPAPI, bound to your user account. |
@@ -192,7 +192,6 @@ Open the built-in reference any time with the **keyboard icon** in the title bar
 | `Ctrl + Alt + Space` | Show the app. If text is selected in the focused window, opens the AI tab with that text already captured. Otherwise opens the Clipboard tab. |
 | `Ctrl + Alt + K` | Show the Credentials tab with KeePass entries matched to the current window. |
 | `Ctrl + Alt + T` | Type the current OTP straight into the focused window. |
-| `Ctrl + Alt + Shift + A` | **Type only the password** of the best matching entry, into the focused window, without opening the app. Works even when the target is a VDI session that has just logged out. |
 
 **Inside the app**
 
@@ -200,10 +199,12 @@ Open the built-in reference any time with the **keyboard icon** in the title bar
 |---|---|
 | `←` / `→` | Switch tabs (disabled on Settings so arrows work in text fields). |
 | `↑` / `↓` | Move the selection inside a list. |
-| `Enter` | Activate the selected item, or run the AI task. |
+| `Enter` | Activate the selected item, or run the AI task. On the Credentials tab: type the Auto-Type sequence. |
+| `u` | Credentials tab only: type just the username of the selected entry. |
+| `p` | Credentials tab only: type just the password of the selected entry. |
 | `Esc` | Hide the window to the tray. |
 
-All four global combinations are **configurable** in **⚙ Settings → Keyboard
+All three global combinations are **configurable** in **⚙ Settings → Keyboard
 shortcuts**. Each field accepts a value such as `ctrl+alt+space`,
 `ctrl+alt+shift+a`, or `ctrl+f5` (modifiers plus one key, case-insensitive). The
 form shows the parsed combination live and refuses to save an invalid or
@@ -282,8 +283,17 @@ Every row has four always-visible buttons plus a **⋮** menu:
 
 The **⋮** menu adds **Fill default**, **Edit entry…**, and **Delete entry…**.
 
-- **Fill default** (or double-clicking a row) executes the entry's Auto-Type
-  sequence — by default `{USERNAME}{TAB}{PASSWORD}`.
+Keyboard shortcuts on this tab (no clicking needed):
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Move the selection between entries |
+| `Enter` | Type the entry's Auto-Type sequence |
+| `u` | Type **only the username** of the selected entry |
+| `p` | Type **only the password** of the selected entry |
+
+- **Fill default** (or double-clicking a row, or `Enter`) executes the entry's
+  Auto-Type sequence — by default `{USERNAME}{TAB}{PASSWORD}`.
 - The filter box narrows the list; clearing it shows all entries again.
 - **Search all** — when the window title no longer matches your entries (titles
   change often), click **Search all** to search and edit the *whole* database
@@ -421,6 +431,16 @@ They survive moving or reinstalling the app.
 3. Double-click the entry. The app hides and types username, `Tab`, password.
 4. Press `Ctrl + Alt + T` to fill the one-time token.
 
+### Log in to a VDI session (Citrix / VMware Horizon)
+
+Remote-desktop clients only accept real keyboard input, so type with `Ctrl + Alt + K`:
+
+1. Click the password box inside the remote session.
+2. `Ctrl + Alt + K` — the Credentials tab opens.
+3. `↑` / `↓` to pick your VDI entry.
+4. Press **`p`** to type only the password — or **`u`** for the username,
+   or **`Enter`** to type the entry's full Auto-Type sequence.
+
 ### Reply to a Teams message
 
 1. Select the message text.
@@ -461,9 +481,9 @@ They survive moving or reinstalling the app.
   multi-line text vanished after the first line, you wanted this button.
 - **The AI tab needs no selection** if you attach a screenshot — it can work
   from the image alone.
-- **Password-only typing (`Ctrl + Alt + Shift + A`)** is the VDI-safe path: it
-  types just the password, never opens the window, so it still works when a
-  remote session has just dropped and re-focused.
+- **VDI login (Citrix, VMware Horizon):** press `Ctrl + Alt + K`, pick the
+  entry with `↑`/`↓`, then press `p` to type only the password (or `u` for the
+  username). This is the path that works on remote-desktop login screens.
 - **Rebind any hotkey** in **Settings → Keyboard shortcuts** if a combination
   clashes with another application.
 - **Refine, don't re-run.** Follow-ups keep context; starting a fresh task
@@ -585,7 +605,7 @@ Both directions need an upstream FFI addition to fix properly.
 - **Clipboard history is capped at 10 items** and is not persisted across
   restarts.
 - **One entry at a time.** With several matching entries, the best-scored one is
-  used by the password-only hotkey.
+  selected by default on the Credentials tab.
 - **One match is used at a time.** With several matching entries, the best-scored
   one is selected.
 - **MobilePASS automation is out of scope.**

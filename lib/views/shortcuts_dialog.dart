@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 
 /// Reference dialog listing the global hotkeys and the in-app keys.
 ///
-/// The combinations are fixed for now (registering user-defined ones would
-/// need hotkey rebinding plus conflict detection), so this is read-only.
+/// The global combinations can be changed in Settings; the in-app keys are
+/// fixed.
 class ShortcutsDialog extends StatelessWidget {
   const ShortcutsDialog({super.key});
 
@@ -14,14 +14,16 @@ class ShortcutsDialog extends StatelessWidget {
         'matches for the current window.'),
     (keys: 'Ctrl + Alt + T', action: 'Type the current OTP into the focused '
         'window.'),
-    (keys: 'Ctrl + Alt + Shift + A', action: 'Type only the password of the '
-        'best matching KeePass entry, without opening the app.'),
   ];
 
   static const List<({String keys, String action})> _inApp = [
     (keys: '← / →', action: 'Switch tabs (not on the Settings tab).'),
     (keys: '↑ / ↓', action: 'Move the selection inside a list.'),
     (keys: 'Enter', action: 'Activate the selected item, or run the AI task.'),
+    (keys: 'u', action: 'Credentials tab: type only the username of the '
+        'selected entry.'),
+    (keys: 'p', action: 'Credentials tab: type only the password of the '
+        'selected entry.'),
     (keys: 'Esc', action: 'Hide the window to the system tray.'),
   ];
 

@@ -84,38 +84,119 @@ class InputSimulator {
     await _sendModifierShortcut(0x41); // 'A'
   }
 
-  /// Sends a modifier+key shortcut using the virtual-key codes.
+  /// Sends a modifier+key shortcut using virtual-key codes plus scancodes.
+  ///
+  /// The scancode matters for remote-desktop clients (Citrix/Vmware), which
+  /// forward physical-keyboard scan codes and drop events that carry only `wVk`.
   static Future<void> _sendModifierShortcut(int keyVk,
       {int modifierVk = VK_CONTROL}) async {
     _releaseModifiers();
     await Future.delayed(const Duration(milliseconds: 50));
+
+    final layout = _keyboardLayout;
+    final keyScan = MapVirtualKeyEx(keyVk, 0 /* VT_TO_VSC */, layout) & 0xFF;
+    final modScan =
+        MapVirtualKeyEx(modifierVk, 0 /* VT_TO_VSC */, layout) & 0xFF;
 
     final pInputs = calloc<INPUT>(4);
 
     // Modifier Down
     pInputs[0].type = INPUT_KEYBOARD;
     pInputs[0].ki.wVk = modifierVk;
+    pInputs[0].ki.wScan = modScan;
 
     // Key Down
     pInputs[1].type = INPUT_KEYBOARD;
     pInputs[1].ki.wVk = keyVk;
+    pInputs[1].ki.wScan = keyScan;
 
     // Key Up
     pInputs[2].type = INPUT_KEYBOARD;
     pInputs[2].ki.wVk = keyVk;
+    pInputs[2].ki.wScan = keyScan;
     pInputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
 
     // Modifier Up
     pInputs[3].type = INPUT_KEYBOARD;
     pInputs[3].ki.wVk = modifierVk;
+    pInputs[3].ki.wScan = modScan;
     pInputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
 
     _send(pInputs, 4);
     free(pInputs);
   }
 
-  /// Sends a single character using Windows KEYEVENTF_UNICODE
+  /// Sends a single character.
+  ///
+  /// Prefers a **virtual-key** injection (`wVk` + scancode + Shift when the
+  /// character needs it) because remote-desktop clients such as Citrix's ICA/
+  /// HDX Desktop Viewer only forward keyboard *scancodes*, mirroring a physical
+  /// keyboard. Pure `KEYEVENTF_UNICODE` events have no scancode and are dropped
+  /// by those clients, which is why typing silently did nothing there while it
+  /// worked in ordinary local apps and in KeePass (which types virtual keys).
+  ///
+  /// Characters with no key mapping on the active layout (e.g. CJK, emoji)
+  /// still fall back to `KEYEVENTF_UNICODE`, which is what local apps need.
   static void _sendChar(int codeUnit) {
+    final vkScan = VkKeyScan(codeUnit);
+    final hasKey = vkScan != -1;
+
+    if (!hasKey) {
+      _sendUnicodeChar(codeUnit);
+      return;
+    }
+
+    final vk = vkScan & 0xFF;
+    final shiftState = (vkScan >> 8) & 0xFF;
+    final scan = MapVirtualKeyEx(vk, 0 /* MAPVK_VK_TO_VSC */, _keyboardLayout) &
+        0xFF;
+
+    final needsShift = (shiftState & 1) != 0;
+    final needsCtrl = (shiftState & 2) != 0;
+    final needsAlt = (shiftState & 4) != 0;
+
+    // Shift + key down, key up, Shift up: six events at most.
+    final pInputs = calloc<INPUT>(6);
+    var i = 0;
+
+    void modifierKey(int keyVk, int flags) {
+      pInputs[i].type = INPUT_KEYBOARD;
+      pInputs[i].ki.wVk = keyVk;
+      pInputs[i].ki.dwFlags = flags;
+      i++;
+    }
+
+    if (needsShift) modifierKey(VK_SHIFT, 0);
+    if (needsCtrl) modifierKey(VK_CONTROL, 0);
+    if (needsAlt) modifierKey(VK_MENU, 0);
+
+    // Key down (also carries the scancode so remote sessions accept it).
+    pInputs[i].type = INPUT_KEYBOARD;
+    pInputs[i].ki.wVk = vk;
+    pInputs[i].ki.wScan = scan;
+    i++;
+    // Key up.
+    pInputs[i].type = INPUT_KEYBOARD;
+    pInputs[i].ki.wVk = vk;
+    pInputs[i].ki.wScan = scan;
+    pInputs[i].ki.dwFlags = KEYEVENTF_KEYUP;
+    i++;
+
+    // Release modifiers in reverse order. These MUST be included in the count
+    // sent below, otherwise the key-down for Shift/Ctrl/Alt is never matched
+    // and the modifier stays logically pressed, turning the next characters
+    // into their shifted symbols (0 -> ')', 7 -> '&', ...).
+    if (needsAlt) modifierKey(VK_MENU, KEYEVENTF_KEYUP);
+    if (needsCtrl) modifierKey(VK_CONTROL, KEYEVENTF_KEYUP);
+    if (needsShift) modifierKey(VK_SHIFT, KEYEVENTF_KEYUP);
+
+    assert(i <= 6, 'input buffer must hold all six events');
+    _send(pInputs, i);
+    free(pInputs);
+  }
+
+  /// Character with no key mapping: inject it as a Unicode code point.
+  static void _sendUnicodeChar(int codeUnit) {
     final pInputs = calloc<INPUT>(2);
 
     pInputs[0].type = INPUT_KEYBOARD;
@@ -129,6 +210,10 @@ class InputSimulator {
     _send(pInputs, 2);
     free(pInputs);
   }
+
+  /// Keyboard layout of the foreground thread, used to map characters to
+  /// virtual keys/scancodes for the user's active layout.
+  static int get _keyboardLayout => GetKeyboardLayout(0);
 
   /// Sends Enter via atomic KeyDown + KeyUp (wScan = 0 prevents IME swallowing)
   static void _sendEnter() {
@@ -176,14 +261,24 @@ class InputSimulator {
     free(pInputs);
   }
 
+  /// Releases modifier keys so they don't corrupt the incoming strokes.
+  ///
+  /// Public so sequence execution can clear a stuck Shift/Ctrl/Alt before a
+  /// control key (TAB, ENTER) is pressed.
+  static void releaseModifiers() => _releaseModifiers();
+
   /// Releases modifier keys so they don't corrupt the incoming strokes
   static void _releaseModifiers() {
     final pInputs = calloc<INPUT>(4);
     final keys = [VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN];
+    final layout = _keyboardLayout;
 
     for (int i = 0; i < 4; i++) {
       pInputs[i].type = INPUT_KEYBOARD;
       pInputs[i].ki.wVk = keys[i];
+      // A scancode is required for remote-desktop clients to clear a modifier
+      // that got stuck on their side.
+      pInputs[i].ki.wScan = MapVirtualKeyEx(keys[i], 0, layout) & 0xFF;
       pInputs[i].ki.dwFlags = KEYEVENTF_KEYUP;
     }
 
@@ -195,13 +290,18 @@ class InputSimulator {
   static void pressKey(int virtualKey, {bool release = true}) {
     final count = release ? 2 : 1;
     final pInputs = calloc<INPUT>(count);
+    // Carry the scancode so remote-desktop clients (Citrix/Vmware) forward it.
+    final scan = MapVirtualKeyEx(virtualKey, 0 /* VT_TO_VSC */, _keyboardLayout) &
+        0xFF;
 
     pInputs[0].type = INPUT_KEYBOARD;
     pInputs[0].ki.wVk = virtualKey;
+    pInputs[0].ki.wScan = scan;
 
     if (release) {
       pInputs[1].type = INPUT_KEYBOARD;
       pInputs[1].ki.wVk = virtualKey;
+      pInputs[1].ki.wScan = scan;
       pInputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
     }
 
@@ -236,6 +336,13 @@ class InputSimulator {
   ///
   /// Used to stop typing as soon as the target loses focus, so keystrokes
   /// never spill into another window.
+  ///
+  /// A window also counts as focused when the foreground window belongs to the
+  /// **same process** as [hwnd]. Remote-desktop clients (Citrix's Desktop
+  /// Viewer, VMware Horizon) render the session in one window but show secure
+  /// login / password prompts in a *sibling* top-level window of the same
+  /// process; keyboard input still reaches the session, so treating those as
+  /// "lost focus" would abort typing exactly where it is needed.
   static bool isFocused(int hwnd) {
     if (hwnd == 0) return false;
     final fg = GetForegroundWindow();
@@ -244,7 +351,22 @@ class InputSimulator {
     // Dialogs and some apps put a child/owned window in the foreground.
     if (GetAncestor(fg, GA_ROOT) == hwnd) return true;
     if (GetAncestor(fg, GA_ROOTOWNER) == hwnd) return true;
-    return false;
+    // Same-process sibling windows (remote-desktop secure prompts, etc.).
+    return _sameProcess(fg, hwnd);
+  }
+
+  /// Whether both windows belong to the same process id.
+  static bool _sameProcess(int a, int b) {
+    final pA = calloc<Uint32>();
+    final pB = calloc<Uint32>();
+    try {
+      GetWindowThreadProcessId(a, pA);
+      GetWindowThreadProcessId(b, pB);
+      return pA.value != 0 && pA.value == pB.value;
+    } finally {
+      free(pA);
+      free(pB);
+    }
   }
 
   /// Whether [hwnd] is a real, visible, focusable top-level window.

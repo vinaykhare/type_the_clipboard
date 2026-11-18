@@ -33,8 +33,9 @@ flutter test
 - `lib/services/llm_service.dart` — OpenAI-compatible, Gemini, and Anthropic wrappers; `call(text, task:)`, cancellation, vision, short errors.
 - `lib/services/text_extractor.dart` — captures selected/all text from a target window using the clipboard (timeout-guarded, cancellable).
 - `lib/services/screen_capture_service.dart` — GDI window screenshot, BMP → PNG via `System.Drawing`.
+- `lib/startup_helper.dart` — `StartupHelper.setAutoStart(bool)` / `isAutoStartEnabled` via the `HKCU` `Run` key.
 - `lib/input_simulator.dart` — Win32 `SendInput` helpers (`typeText`, `pressKey`, `copyViaShortcut`, `activateWindow`, `isFocused`, etc.).
-- `lib/core/keyboard_navigable.dart` — interface for tabs that support Up/Down/Enter navigation.
+- `lib/core/keyboard_navigable.dart` — interface for tabs that support Up/Down/Enter navigation plus the optional `typeUsername` / `typePassword` actions.
 - `lib/core/typing_guard.dart` — `TypingGuard.run(task)`; low-level keyboard hook that swallows injected keystrokes.
 
 ## Key behaviour
@@ -45,10 +46,6 @@ flutter test
     and starts the LLM rephrase. Otherwise shows the Clipboard tab.
   - `Ctrl + Alt + T` (`HOTKEY_OTP`) — type the current TOTP into the active window.
   - `Ctrl + Alt + K` (`HOTKEY_CREDENTIALS`) — show the Credentials tab with KeePass matches for the active window.
-  - `Ctrl + Alt + Shift + A` (`HOTKEY_PASSWORD`) — type **only the password** of
-    the best matching entry into the active window, mirroring KeePassXC. Runs in
-    `_typePasswordIntoTarget`, which never shows/hides the window, so it keeps
-    working when the target is a VDI session that has just logged out.
   - `_registerHotkey` falls back to the default when the saved value cannot be
     parsed or registration fails (e.g. another app owns the combination).
   - Saving Settings re-runs `_initHotkeys()`.
@@ -63,6 +60,13 @@ flutter test
   - Left/Right arrows switch tabs.
   - Up/Down arrows move selection inside a tab.
   - Enter activates the selected item.
+  - `u` / `p` on the Credentials tab type only the username / only the password
+    of the selected entry (`KeyboardNavigableView.typeUsername` /
+    `typePassword`, default `false` for other tabs). `_handleKeyEvent` ignores
+    them while a text field has focus (`_isTextFieldFocused`), so the search
+    box, AI source box and settings fields still receive the letters.
+  - The `HardwareKeyboard` handler runs **before** the focus tree, hence that
+    guard; new in-app letter shortcuts need the same check.
 - Clipboard history:
   - A search box filters items as you type.
   - Enter or double-click pastes the selected item (`Ctrl+V`).
@@ -114,7 +118,23 @@ flutter test
     trailing Enter), otherwise just the available field.
   - Each row shows always-visible Type user / Type password / Copy user /
     Copy password buttons; the ⋮ menu keeps edit and delete.
+  - Typing from the Credentials tab (`Enter` / `u` / `p`) hides the window,
+    injects into the captured target, and falls back to copying the value when
+    the target refuses input (`_typeField` -> `_copyWithNotice`).
   - Currently selects the first match when multiple entries match.
+  - **VDI (Citrix ICA/HDX, VMware Horizon) sessions only accept real
+    scancodes**; `KEYEVENTF_UNICODE` events are silently dropped. `_sendChar`
+    therefore resolves each character with `VkKeyScan` and injects
+    virtual-key + `MapVirtualKeyEx` scancode (plus Shift when needed), keeping
+    the unicode path only for characters with no key mapping. Do not "simplify"
+    this back to plain unicode injection — typing stops working in VDI.
+  - `_sendChar` must send *all* events it built (including the Shift key-up);
+    capturing the count before appending modifier releases left Shift stuck,
+    which turned `0721` into `)&@!`. `AutoTypeExecutor.emitKey` calls
+    `InputSimulator.releaseModifiers()` before TAB/Enter, and `test/
+    typing_modifiers_test.dart` guards the balance.
+  - `InputSimulator.isFocused` also accepts same-process sibling windows:
+    remote-desktop credential prompts live in sibling windows of the client.
 - Settings:
   - LLM provider can be switched between OpenAI Compatible, Google Gemini, and Anthropic.
   - The default **System Prompt** is task-agnostic (answer the TASK using the
@@ -127,10 +147,18 @@ flutter test
   - "Open AI tab automatically when text is selected" (`aiAutoCaptureSelection`,
     default on) controls the `Ctrl+Alt+Space` behaviour above.
   - KeePass master password and TOTP secret have working show/hide toggles.
-  - **Keyboard shortcuts** section: four text fields (`_buildHotkeyField`) for
-    show / credentials / OTP / password. Each shows the parsed combination live
-    and flags unparseable input. `_save` validates every field and rejects
-    duplicates before persisting; `onSaved` re-registers the hotkeys.
+  - **Keyboard shortcuts** section: three text fields (`_buildHotkeyField`) for
+    show / credentials / OTP. Each shows the parsed combination live and flags
+    unparseable input. `_save` validates every field and rejects duplicates
+    before persisting; `onSaved` re-registers the hotkeys.
+  - "Start Typecraft when Windows starts" toggles the `HKCU` `Run` entry through
+    `StartupHelper.setAutoStart`; the registry is the source of truth and the
+    change applies immediately on toggle. Skipped under `flutter test`
+    (`Platform.environment.containsKey('FLUTTER_TEST')`) because fake-async
+    timers never fire there.
+  - A stale saved `hotkeyPassword` / `vdiEntryTitle` value from an older build
+    is harmless: the service still reads it but the UI and hotkey registration
+    ignore it.
 
 ## Important notes
 - The product is branded **Typecraft** but the Dart package stays `type_the_clipboard`: the SharedPreferences path is derived from the package name, so renaming it would orphan existing settings in `%APPDATA%\com.example\type_the_clipboard`.

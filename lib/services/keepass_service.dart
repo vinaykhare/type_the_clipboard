@@ -167,6 +167,24 @@ class KeePassService {
   /// `Enclave - NetScaler AAA` and entry `NetScaler`) scores far higher than
   /// an entry that merely shares a token (`NetCracker` shares "net"), and the
   /// score is used to rank the results.
+  /// Returns entries whose title matches [title] exactly (case-insensitive),
+  /// and only then falls back to [findEntries] ranking.
+  ///
+  /// Used by the password-only hotkey when the user has pinned an entry, so a
+  /// VDI login types the right password regardless of the window title.
+  Future<List<KeePassEntryRef>> findByTitle(String title) async {
+    final wanted = title.trim().toLowerCase();
+    if (wanted.isEmpty) return [];
+    final all = await allEntries();
+    final exact = all.where((e) => e.title.trim().toLowerCase() == wanted);
+    if (exact.isNotEmpty) return exact.toList();
+    // Tolerate the title being stored with extra decoration.
+    final partial =
+        all.where((e) => e.title.toLowerCase().contains(wanted)).toList();
+    if (partial.isNotEmpty) return partial;
+    return findEntries(title);
+  }
+
   Future<List<KeePassEntryRef>> findEntries(String? hint) async {
     final trimmed = hint?.trim() ?? '';
     if (trimmed.isEmpty) return [];

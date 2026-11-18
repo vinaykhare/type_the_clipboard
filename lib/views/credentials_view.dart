@@ -242,6 +242,26 @@ class CredentialsViewState extends State<CredentialsView>
     }
   }
 
+  /// Typed when the user presses "u" on the Credentials tab: the username of
+  /// the highlighted entry only.
+  @override
+  Future<bool> typeUsername() async {
+    final visible = _visibleEntries;
+    if (_selectedIndex < 0 || _selectedIndex >= visible.length) return false;
+    await _typeField(visible[_selectedIndex], '{USERNAME}');
+    return true;
+  }
+
+  /// Typed when the user presses "p" on the Credentials tab: the password of
+  /// the highlighted entry only.
+  @override
+  Future<bool> typePassword() async {
+    final visible = _visibleEntries;
+    if (_selectedIndex < 0 || _selectedIndex >= visible.length) return false;
+    await _typeField(visible[_selectedIndex], '{PASSWORD}');
+    return true;
+  }
+
   Future<void> _typeField(KeePassEntryRef ref, String token) async {
     final value = token.contains('PASSWORD') ? ref.password : ref.username;
     final label = token.contains('PASSWORD') ? 'password' : 'username';

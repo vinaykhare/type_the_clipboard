@@ -10,8 +10,6 @@ import 'package:window_manager/window_manager.dart';
 import 'package:type_the_clipboard/core/keyboard_navigable.dart';
 import 'package:type_the_clipboard/input_simulator.dart';
 import 'package:type_the_clipboard/models/hotkey_binding.dart';
-import 'package:type_the_clipboard/services/auto_type_executor.dart';
-import 'package:type_the_clipboard/services/keepass_service.dart';
 import 'package:type_the_clipboard/services/settings_service.dart';
 import 'package:type_the_clipboard/views/ai_view.dart';
 import 'package:type_the_clipboard/views/clipboard_view.dart';
@@ -166,16 +164,6 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
         await _showWindow(_credentialsTab);
       },
     );
-
-    // Type only the password of the best matching entry.
-    await _registerHotkey(
-      settings.hotkeyPassword,
-      SettingsService.defaultHotkeyPassword,
-      (_) async {
-        _captureTarget();
-        await _typePasswordIntoTarget();
-      },
-    );
   }
 
   /// Registers [configured] as a global hotkey, falling back to [fallback]
@@ -285,64 +273,6 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
     await InputSimulator.typeText(code, delayMs: 10);
   }
 
-  /// Types only the password of the best entry matching the captured window.
-  ///
-  /// This is the KeePassXC `Ctrl+Alt+Shift+A` behaviour and is deliberately
-  /// independent of the UI: it never shows or hides this window, so it keeps
-  /// working when the target is a VDI session that has just been re-focused.
-  Future<void> _typePasswordIntoTarget() async {
-    final hwnd = _lastTargetHwnd;
-    if (hwnd == 0 || !InputSimulator.isUsableTarget(hwnd)) {
-      await _notify('No target window: click into the field you want to fill, '
-          'then press the shortcut again.');
-      return;
-    }
-
-    final service = KeePassService(widget.settings);
-    final matches = await service.findEntries(_lastTargetTitle);
-    if (matches.isEmpty) {
-      final reason = service.lastError;
-      await _notify(reason != null
-          ? 'KeePass: $reason'
-          : 'No KeePass entry matches "$_lastTargetTitle".');
-      return;
-    }
-
-    final password = matches.first.password;
-    if (password.isEmpty) {
-      await _notify('The matching entry "${matches.first.title}" has no '
-          'password.');
-      return;
-    }
-
-    final ok = await AutoTypeExecutor.execute(
-      '{PASSWORD}',
-      username: matches.first.username,
-      password: password,
-      targetHwnd: hwnd,
-    );
-    if (!ok) {
-      await Clipboard.setData(ClipboardData(text: password));
-      await _notify('The target window would not accept input, so the password '
-          'was copied to the clipboard instead.');
-    }
-  }
-
-  /// Shows a short message without stealing focus from the target window.
-  Future<void> _notify(String message) async {
-    debugPrint('[Typecraft] $message');
-    if (mounted) {
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(
-          SnackBar(
-            content: Text(message),
-            duration: const Duration(seconds: 4),
-          ),
-        );
-    }
-  }
-
   KeyboardNavigableView? _currentNavigableView() {
     if (_tabIndex == _settingsTab) return null;
     final key = _tabKeys[_tabIndex];
@@ -389,7 +319,35 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
       return true;
     }
 
+    // Credentials-only quick actions: "u" types the username, "p" the
+    // password of the highlighted entry. Ignored while a text field (search
+    // box, AI source, settings) has focus so typing still works normally.
+    if (_tabIndex == _credentialsTab &&
+        !_isTextFieldFocused(event) &&
+        (event.logicalKey == LogicalKeyboardKey.keyU ||
+            event.logicalKey == LogicalKeyboardKey.keyP)) {
+      final view = _currentNavigableView();
+      if (view != null) {
+        if (event.logicalKey == LogicalKeyboardKey.keyU) {
+          view.typeUsername();
+        } else {
+          view.typePassword();
+        }
+        return true;
+      }
+    }
+
     return false;
+  }
+
+  /// True when a text input currently owns the keyboard focus.
+  bool _isTextFieldFocused(KeyEvent event) {
+    final context = FocusManager.instance.primaryFocus?.context;
+    if (context == null) return false;
+    // EditableText is used by every TextField / TextFormField; its focus
+    // context sits inside an EditableText widget.
+    return context.widget is EditableText ||
+        context.findAncestorWidgetOfExactType<EditableText>() != null;
   }
 
   void _changeTab(int delta) {

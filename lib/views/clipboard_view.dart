@@ -277,6 +277,12 @@ class ClipboardViewState extends State<ClipboardView>
       ],
     );
   }
+
+  @override
+  Future<bool> typeUsername() async => false;
+
+  @override
+  Future<bool> typePassword() async => false;
 }
 
 class _ActionIcon extends StatelessWidget {
@@ -300,4 +306,5 @@ class _ActionIcon extends StatelessWidget {
       onPressed: onPressed,
     );
   }
+
 }
