@@ -1,6 +1,10 @@
+import 'dart:io';
+import 'dart:math';
+
 import 'package:flutter/foundation.dart';
 import 'package:keepass_flutter/keepass_flutter.dart';
 
+import 'package:type_the_clipboard/services/import_csv.dart';
 import 'package:type_the_clipboard/services/settings_service.dart';
 import 'package:type_the_clipboard/views/entry_form_dialog.dart'
     show keepassAutoTypeKey, keepassAutoTypeClearKey;
@@ -56,6 +60,37 @@ class KeePassEntryRef {
   }
 }
 
+/// Outcome of [KeePassService.importCredentials].
+class ImportSummary {
+  /// Rows written to the database.
+  final int added;
+
+  /// Rows skipped because title, username and password already matched.
+  final int skipped;
+
+  /// Rows whose title was suffixed (`-1`, `-2`, …) to avoid a clash.
+  final int renamed;
+
+  /// Group the new entries were written to.
+  final String groupName;
+
+  const ImportSummary({
+    required this.added,
+    required this.skipped,
+    required this.renamed,
+    required this.groupName,
+  });
+
+  String get label {
+    final parts = <String>['$added imported'];
+    if (skipped > 0) {
+      parts.add('$skipped duplicate${skipped == 1 ? '' : 's'} skipped');
+    }
+    if (renamed > 0) parts.add('$renamed renamed to avoid title clashes');
+    return '${parts.join(', ')} (group "$groupName").';
+  }
+}
+
 /// A group in the database tree.
 class KeePassGroupRef {
   final String uuid;
@@ -87,15 +122,29 @@ class KeePassService {
   /// Open databases keyed by `path|keyFile`, so that two views never end up
   /// with independent handles to the same file and so no handle is finalized
   /// while entries from it are still in use.
-  static final Map<String, Database> _openDatabases = {};
+  static final Map<String, _OpenDatabase> _openDatabases = {};
 
   KeePassService(this._settings);
 
   String get _cacheKey =>
       '${_settings.keepassDbPath}|${_settings.keepassKeyFilePath}';
 
-  /// The open database, if this service has opened it.
-  Database? get _db => _openDatabases[_cacheKey];
+  /// The open database, if this service has opened it **with the current
+  /// credentials**.
+  ///
+  /// The password is part of the hit test, not of the key: a handle opened
+  /// with a different password must never be handed back, otherwise Test
+  /// Connection (and the Credentials tab) would report success for a wrong
+  /// password simply because an earlier attempt opened the file with the
+  /// right one. A changed path or password closes the stale handle.
+  Database? get _db {
+    final key = _cacheKey;
+    final entry = _openDatabases[key];
+    if (entry == null) return null;
+    if (entry.password == _settings.keepassMasterKey) return entry.db;
+    _openDatabases.remove(key)?.db.close();
+    return null;
+  }
 
   bool get isConfigured =>
       _settings.keepassDbPath.isNotEmpty &&
@@ -128,7 +177,7 @@ class KeePassService {
               keyFilePath: keyFile,
             )
           : Database.open(path, password: password);
-      _openDatabases[_cacheKey] = db;
+      _openDatabases[_cacheKey] = _OpenDatabase(db, password);
       lastError = null;
       return db;
     } catch (e) {
@@ -373,6 +422,161 @@ class KeePassService {
     Entry(db, entryUuid).delete();
   }
 
+  /// Creates a brand-new empty database on disk.
+  ///
+  /// [password] is required unless a key file is used. When [keyFilePath] is
+  /// given, the file is created if it does not exist yet — the native library
+  /// reads the key file while saving, so a composite key with a missing file
+  /// makes the save fail with "Failed to open key file".
+  ///
+  /// The caller asks with a save dialog, which already confirms overwrites.
+  static Future<void> createDatabase(
+    String path, {
+    required String password,
+    String? keyFilePath,
+  }) async {
+    final useKeyFile = keyFilePath != null && keyFilePath.isNotEmpty;
+    if (password.isEmpty && !useKeyFile) {
+      throw ArgumentError('A master password or key file is required.');
+    }
+    if (useKeyFile) {
+      final keyFile = File(keyFilePath);
+      keyFile.parent.createSync(recursive: true);
+      if (!keyFile.existsSync()) {
+        // 32 random bytes: the same content KeePass / KeePassXC generate.
+        final random = Random.secure();
+        keyFile.writeAsBytesSync(
+          List<int>.generate(32, (_) => random.nextInt(256)),
+          flush: true,
+        );
+      }
+    }
+
+    final db = Database.create();
+    try {
+      if (useKeyFile) {
+        db.saveWithKeyFile(path, password: password, keyFilePath: keyFilePath);
+      } else {
+        db.save(path, password: password);
+      }
+    } finally {
+      db.close();
+    }
+  }
+
+  /// Reopens [path] directly (bypassing the shared cache) with [password] and
+  /// the optional [keyFilePath], returning `true` when the file is readable.
+  ///
+  /// Used to verify a freshly created database: the cache may hold a handle
+  /// for the same path opened with different credentials, which would make a
+  /// cached check report success for the wrong key.
+  static bool verifyOpen(
+    String path, {
+    required String password,
+    String? keyFilePath,
+  }) {
+    try {
+      final db = (keyFilePath != null && keyFilePath.isNotEmpty)
+          ? Database.openWithKeyFile(
+              path,
+              password: password,
+              keyFilePath: keyFilePath,
+            )
+          : Database.open(path, password: password);
+      db.close();
+      return true;
+    } catch (e) {
+      debugPrint('[KeePass] verify failed for $path: $e');
+      return false;
+    }
+  }
+
+  /// Writes [credentials] into the open database, skipping rows whose title,
+  /// username **and** password already exist.
+  ///
+  /// A row that keeps the same title but a different password gets a unique
+  /// suffix (`-1`, `-2`, …) so nothing is silently overwritten.
+  Future<ImportSummary> importCredentials(
+    List<ImportedCredential> credentials, {
+    String groupName = 'Imported',
+  }) async {
+    final db = await open();
+    if (db == null) throw StateError('KeePass database is not open.');
+
+    // Index what is already there once, so the import stays linear.
+    final existing = <String>{};
+    final titles = <String>{};
+    for (final ref in await allEntries()) {
+      existing.add(_duplicateKey(ref.title, ref.username, ref.password));
+      titles.add(ref.title.toLowerCase());
+    }
+
+    // Reuse an "Imported" group so a browser import is easy to find.
+    Group? target;
+    for (final group in db.rootGroup.groups) {
+      try {
+        if (group.name.toLowerCase() == groupName.toLowerCase()) {
+          target = group;
+          break;
+        }
+      } catch (_) {
+        // Ignore unreadable groups.
+      }
+    }
+    target ??= db.rootGroup.createGroup(groupName);
+
+    var added = 0;
+    var skipped = 0;
+    var renamed = 0;
+
+    for (final credential in credentials) {
+      final key = _duplicateKey(
+        credential.effectiveTitle,
+        credential.username,
+        credential.password,
+      );
+      if (existing.contains(key)) {
+        skipped++;
+        continue;
+      }
+
+      var title = credential.effectiveTitle;
+      if (titles.contains(title.toLowerCase())) {
+        final base = title;
+        var suffix = 1;
+        while (titles.contains('$base-$suffix'.toLowerCase())) {
+          suffix++;
+        }
+        title = '$base-$suffix';
+        renamed++;
+      }
+
+      final entry = target.createEntry();
+      _writeFields(entry, {
+        'Title': title,
+        'UserName': credential.username,
+        'Password': credential.password,
+        'URL': credential.url,
+        if (credential.notes.isNotEmpty) 'Notes': credential.notes,
+      });
+      existing.add(key);
+      titles.add(title.toLowerCase());
+      added++;
+    }
+
+    if (added > 0) await save();
+    return ImportSummary(
+      added: added,
+      skipped: skipped,
+      renamed: renamed,
+      groupName: groupName,
+    );
+  }
+
+  static String _duplicateKey(String title, String username, String password) =>
+      '${title.trim().toLowerCase()}\u0000'
+      '${username.trim().toLowerCase()}\u0000$password';
+
   /// Persists the in-memory database back to the `.kdbx` file.
   Future<void> save() async {
     final db = await open();
@@ -496,14 +700,22 @@ class KeePassService {
   /// from the closed database become unusable.
   void closeDatabase() {
     final key = _cacheKey;
-    _openDatabases.remove(key)?.close();
+    _openDatabases.remove(key)?.db.close();
   }
 
   /// Closes every cached database. Used on settings changes and shutdown.
   static void closeAll() {
-    for (final db in _openDatabases.values) {
-      db.close();
+    for (final entry in _openDatabases.values) {
+      entry.db.close();
     }
     _openDatabases.clear();
   }
+}
+
+/// A cached [`Database`] together with the master password that opened it.
+class _OpenDatabase {
+  final Database db;
+  final String password;
+
+  _OpenDatabase(this.db, this.password);
 }

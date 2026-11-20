@@ -34,6 +34,12 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Native library produced by cargokit for keepass_flutter during `flutter build`.
+# It is a per-machine build artefact (must be rebuilt for each Rust target and
+# toolchain); `flutter test` copies it here from build/ when the native tests
+# need it.
+/keepass_flutter_native.dll
+
 # Symbolication related
 app.*.symbols
 

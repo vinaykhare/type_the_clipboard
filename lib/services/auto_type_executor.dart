@@ -69,7 +69,7 @@ class AutoTypeExecutor {
         if (text.isNotEmpty && stillTargeted()) {
           if (pasteInsteadOfType) {
             // Clipboard fallback for targets that reject injected keystrokes
-            // (Citrix/Vmware VDI secure prompts). Caller has already copied
+            // (Citrix/VMware VDI secure prompts). Caller has already copied
             // the text to the clipboard.
             await InputSimulator.pasteViaShortcut();
             await Future.delayed(const Duration(milliseconds: 120));

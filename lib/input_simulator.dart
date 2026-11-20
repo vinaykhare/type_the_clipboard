@@ -410,6 +410,69 @@ class InputSimulator {
     }
   }
 
+  /// Executable name (without `.exe`) of the process that owns [hwnd], or an
+  /// empty string when it cannot be determined.
+  ///
+  /// Used to detect remote-desktop clients (Citrix, Horizon, RDP), whose
+  /// windows need different handling than ordinary applications.
+  static String getProcessName(int hwnd) {
+    if (hwnd == 0) return '';
+    final pid = calloc<Uint32>();
+    try {
+      GetWindowThreadProcessId(hwnd, pid);
+      if (pid.value == 0) return '';
+      final process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid.value);
+      if (process == 0) return '';
+      try {
+        final buffer = wsalloc(260);
+        try {
+          final size = calloc<Uint32>()..value = 260;
+          try {
+            if (QueryFullProcessImageName(process, 0, buffer, size) == 0) {
+              return '';
+            }
+            final path = buffer.toDartString();
+            final name = path.split(RegExp(r'[\\/]')).last;
+            return name.toLowerCase().replaceFirst(RegExp(r'\.exe$'), '');
+          } finally {
+            free(size);
+          }
+        } finally {
+          free(buffer);
+        }
+      } finally {
+        CloseHandle(process);
+      }
+    } finally {
+      free(pid);
+    }
+  }
+
+  /// Handle of this process's own visible top-level window, or `null`.
+  ///
+  /// Used to own native dialogs: an owner window in another process (for
+  /// example a remote-desktop client that happens to be in the foreground)
+  /// makes `GetOpenFileName` / `GetSaveFileName` fail to show.
+  static int? findOwnWindow() {
+    final myPid = GetCurrentProcessId();
+    var hwnd = GetTopWindow(0);
+    while (hwnd != 0) {
+      final windowPid = calloc<Uint32>();
+      try {
+        GetWindowThreadProcessId(hwnd, windowPid);
+        if (windowPid.value == myPid &&
+            IsWindowVisible(hwnd) != 0 &&
+            GetWindowTextLength(hwnd) > 0) {
+          return hwnd;
+        }
+      } finally {
+        free(windowPid);
+      }
+      hwnd = GetWindow(hwnd, GW_HWNDNEXT);
+    }
+    return null;
+  }
+
   /// Brings [hwnd] to the foreground and waits until it really has focus.
   ///
   /// Returns `false` if the OS refused to switch focus (some elevated or
