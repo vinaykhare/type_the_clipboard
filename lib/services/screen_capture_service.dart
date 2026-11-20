@@ -23,7 +23,7 @@ class ScreenCapture {
 /// Captures a region of the screen with GDI and encodes it as a PNG.
 ///
 /// Used by the AI tab to send an image of the selection area together with
-/// the captured text ("circle to search" style).
+/// the captured text.
 class ScreenCaptureService {
   /// Screenshot of the whole window [hwnd] (clipped to the screen).
   static Future<ScreenCapture?> captureWindow(int hwnd) async {

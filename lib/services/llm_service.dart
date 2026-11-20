@@ -28,6 +28,46 @@ class LlmCancelledException implements Exception {
   String toString() => 'Cancelled';
 }
 
+/// A binary payload sent to the model next to the prompt.
+///
+/// Today only images are supported by every provider. Documents are reduced
+/// to text locally before they get here, so [mimeType] staying in the
+/// `image/*` family is what the request builders rely on.
+class LlmAttachment {
+  /// Raw file bytes (PNG for screenshots).
+  final Uint8List bytes;
+
+  /// IANA media type, e.g. `image/png`.
+  final String mimeType;
+
+  /// File name shown in logs and used for the extension-less providers.
+  final String name;
+
+  const LlmAttachment({
+    required this.bytes,
+    required this.mimeType,
+    required this.name,
+  });
+
+  /// Convenience constructor for a captured screenshot.
+  factory LlmAttachment.screenshot(Uint8List pngBytes) => LlmAttachment(
+        bytes: pngBytes,
+        mimeType: 'image/png',
+        name: 'screenshot.png',
+      );
+
+  /// Anthropic only accepts a fixed set of media types.
+  String get anthropicMediaType {
+    const allowed = {
+      'image/jpeg',
+      'image/png',
+      'image/gif',
+      'image/webp',
+    };
+    return allowed.contains(mimeType) ? mimeType : 'image/png';
+  }
+}
+
 /// Thin wrapper around several common LLM APIs.
 ///
 /// The configured URL is treated as a **base URL** (e.g.
@@ -77,7 +117,7 @@ class LlmService {
     String? instruction,
     String? previousResult,
     String? remarks,
-    Uint8List? image,
+    List<LlmAttachment> attachments = const [],
     Completer<void>? cancel,
   }) {
     return call(
@@ -85,7 +125,7 @@ class LlmService {
       task: instruction,
       previousResult: previousResult,
       remarks: remarks,
-      image: image,
+      attachments: attachments,
       cancel: cancel,
     );
   }
@@ -94,14 +134,14 @@ class LlmService {
   ///
   /// [remarks] lets the user refine a previous [previousResult]; both are
   /// folded into the prompt so the model keeps context across rounds.
-  /// [image] is an optional screenshot (PNG) sent as visual context.
+  /// [attachments] are optional screenshots sent as visual context.
   /// Throws [LlmCancelledException] if [cancel] completes first.
   Future<String> call(
     String text, {
     String? task,
     String? previousResult,
     String? remarks,
-    Uint8List? image,
+    List<LlmAttachment> attachments = const [],
     Completer<void>? cancel,
   }) async {
     if (!_settings.hasLlmConfig) {
@@ -138,11 +178,11 @@ class LlmService {
     final Future<String> request;
     switch (_settings.llmProvider) {
       case LlmProvider.openAiCompatible:
-        request = _openAiCompatible(system, user, image);
+        request = _openAiCompatible(system, user, attachments);
       case LlmProvider.googleGemini:
-        request = _googleGemini(system, user, image);
+        request = _googleGemini(system, user, attachments);
       case LlmProvider.anthropic:
-        request = _anthropic(system, user, image);
+        request = _anthropic(system, user, attachments);
     }
 
     final result = await _guard(request, cancel);
@@ -286,7 +326,7 @@ class LlmService {
   Future<String> _openAiCompatible(
     String system,
     String user,
-    Uint8List? image,
+    List<LlmAttachment> attachments,
   ) async {
     final url = _endpoint('chat/completions');
 
@@ -304,18 +344,7 @@ class LlmService {
               if (system.isNotEmpty) {'role': 'system', 'content': system},
               {
                 'role': 'user',
-                'content': image == null
-                    ? user
-                    : [
-                        {'type': 'text', 'text': user},
-                        {
-                          'type': 'image_url',
-                          'image_url': {
-                            'url': 'data:image/png;base64,'
-                                '${base64Encode(image)}',
-                          },
-                        },
-                      ],
+                'content': openAiContentParts(user, attachments),
               },
             ],
             'temperature': 0.7,
@@ -343,7 +372,7 @@ class LlmService {
   Future<String> _googleGemini(
     String system,
     String user,
-    Uint8List? image,
+    List<LlmAttachment> attachments,
   ) async {
     final url = _endpoint(
       'models/$_model:generateContent?key=${_settings.llmApiKey}',
@@ -357,16 +386,7 @@ class LlmService {
             'contents': [
               {
                 'role': 'user',
-                'parts': [
-                  {'text': user},
-                  if (image != null)
-                    {
-                      'inline_data': {
-                        'mime_type': 'image/png',
-                        'data': base64Encode(image),
-                      },
-                    },
-                ],
+                'parts': geminiContentParts(user, attachments),
               },
             ],
             if (system.isNotEmpty)
@@ -404,7 +424,7 @@ class LlmService {
   Future<String> _anthropic(
     String system,
     String user,
-    Uint8List? image,
+    List<LlmAttachment> attachments,
   ) async {
     final url = _endpoint('messages');
 
@@ -424,19 +444,7 @@ class LlmService {
             'messages': [
               {
                 'role': 'user',
-                'content': image == null
-                    ? user
-                    : [
-                        {
-                          'type': 'image',
-                          'source': {
-                            'type': 'base64',
-                            'media_type': 'image/png',
-                            'data': base64Encode(image),
-                          },
-                        },
-                        {'type': 'text', 'text': user},
-                      ],
+                'content': anthropicContentParts(user, attachments),
               },
             ],
           }),
@@ -462,5 +470,66 @@ class LlmService {
         .map((c) => (c as Map)['text']?.toString() ?? '')
         .join('\n')
         .trim();
+  }
+
+  /// OpenAI-compatible `content`: a plain string when nothing is attached,
+  /// otherwise a list of text and `image_url` parts.
+  ///
+  /// Public so the request shape can be unit-tested without HTTP.
+  static Object openAiContentParts(
+    String user,
+    List<LlmAttachment> attachments,
+  ) {
+    if (attachments.isEmpty) return user;
+    return [
+      {'type': 'text', 'text': user},
+      for (final attachment in attachments)
+        {
+          'type': 'image_url',
+          'image_url': {
+            'url': 'data:${attachment.mimeType};base64,'
+                '${base64Encode(attachment.bytes)}',
+          },
+        },
+    ];
+  }
+
+  /// Gemini `parts`: the prompt text followed by one `inline_data` per
+  /// attachment.
+  static List<Map<String, Object>> geminiContentParts(
+    String user,
+    List<LlmAttachment> attachments,
+  ) {
+    return [
+      {'text': user},
+      for (final attachment in attachments)
+        {
+          'inline_data': {
+            'mime_type': attachment.mimeType,
+            'data': base64Encode(attachment.bytes),
+          },
+        },
+    ];
+  }
+
+  /// Anthropic `content`: a plain string when nothing is attached, otherwise
+  /// image blocks followed by the text block.
+  static Object anthropicContentParts(
+    String user,
+    List<LlmAttachment> attachments,
+  ) {
+    if (attachments.isEmpty) return user;
+    return [
+      for (final attachment in attachments)
+        {
+          'type': 'image',
+          'source': {
+            'type': 'base64',
+            'media_type': attachment.anthropicMediaType,
+            'data': base64Encode(attachment.bytes),
+          },
+        },
+      {'type': 'text', 'text': user},
+    ];
   }
 }

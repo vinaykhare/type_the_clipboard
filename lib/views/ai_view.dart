@@ -8,6 +8,7 @@ import 'package:type_the_clipboard/core/keyboard_navigable.dart';
 import 'package:type_the_clipboard/core/typing_guard.dart';
 import 'package:type_the_clipboard/input_simulator.dart';
 import 'package:type_the_clipboard/services/llm_service.dart';
+import 'package:type_the_clipboard/services/ocr_service.dart';
 import 'package:type_the_clipboard/services/screen_capture_service.dart';
 import 'package:type_the_clipboard/services/settings_service.dart';
 import 'package:type_the_clipboard/services/text_extractor.dart';
@@ -55,6 +56,10 @@ class AiViewState extends State<AiView> implements KeyboardNavigableView {
 
   Uint8List? _screenshot;
   bool _includeScreenshot = false;
+
+  /// Per-capture override of the "send as image" setting. `null` means
+  /// "follow Settings".
+  bool? _sendImageOverride;
 
   /// Last task sent, so "Run" can repeat it.
   String? _lastTask;
@@ -190,6 +195,15 @@ class AiViewState extends State<AiView> implements KeyboardNavigableView {
       _screenshot = null;
     }
 
+    // Read the screenshot locally: the text goes into the prompt as a hint so
+    // small or dense text is not misread, while the picture itself still
+    // reaches the model unless the user switched that off.
+    String? ocrText;
+    if (_screenshot != null && !_sendScreenshotAsImage) {
+      setState(() => _status = 'Reading text from the screenshot...');
+      ocrText = await OcrService.readText(_screenshot!);
+    }
+
     final text = await TextExtractor.captureFromWindow(hwnd, token: token);
     _captureToken = null;
 
@@ -199,7 +213,11 @@ class AiViewState extends State<AiView> implements KeyboardNavigableView {
       return;
     }
 
-    if (text == null || text.isEmpty) {
+    // Send the image whenever OCR could not stand in for it: either the user
+    // asked for the image, or local OCR found nothing to add.
+    if (ocrText == null) _sendImageOverride = true;
+
+    if ((text == null || text.isEmpty) && (ocrText == null)) {
       _setSourceText(null);
       setState(() {
         _isBusy = false;
@@ -209,13 +227,46 @@ class AiViewState extends State<AiView> implements KeyboardNavigableView {
       return;
     }
 
-    _setSourceText(text);
+    _setSourceText(mergeScreenshotText(text, ocrText));
+    final capturedLength = text?.length ?? 0;
+    final status = StringBuffer('Captured $capturedLength characters');
+    if (ocrText != null) {
+      status.write(
+        ' and read ${ocrText.length} characters from the screenshot',
+      );
+    } else if (_screenshot != null) {
+      status.write(' and attached the screenshot');
+    }
+    final summary = '${status.toString()}.';
     setState(() {
       _isBusy = false;
-      _status = _screenshot != null
-          ? 'Captured ${text.length} characters and a screenshot.'
-          : 'Captured ${text.length} characters.';
+      _status = summary;
     });
+  }
+
+  /// Whether the current screenshot should be attached as an image.
+  bool get _sendScreenshotAsImage =>
+      _sendImageOverride ?? widget.settings.aiScreenshotAsImage;
+
+  /// Joins the captured selection and the text read from the screenshot.
+  ///
+  /// The OCR text is added as a hint under a marker, and only when it is new:
+  /// an empty OCR result, a case-insensitive duplicate, or OCR that is merely
+  /// part of the selection is dropped to keep the prompt clean.
+  @visibleForTesting
+  static String? mergeScreenshotText(String? captured, String? ocrText) {
+    final source = captured?.trim() ?? '';
+    final ocr = ocrText?.trim() ?? '';
+    if (ocr.isEmpty) return source.isEmpty ? null : source;
+    if (source.isEmpty) return ocr;
+
+    final haystack = source.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    final needle = ocr.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    if (haystack.contains(needle)) return source;
+
+    return '$source\n\n'
+        '--- TEXT READ FROM THE SCREENSHOT (may contain OCR mistakes) ---\n'
+        '$ocr';
   }
 
   /// Asks the LLM to perform [task] on the source text (and screenshot).
@@ -224,8 +275,10 @@ class AiViewState extends State<AiView> implements KeyboardNavigableView {
   /// model keeps context between rounds.
   Future<void> _runTask(String task, {bool refine = false}) async {
     final source = _sourceText?.trim() ?? '';
-    final hasImage = _screenshot != null;
-    if (source.isEmpty && !hasImage) {
+    final attachments = (_screenshot != null && _sendScreenshotAsImage)
+        ? [LlmAttachment.screenshot(_screenshot!)]
+        : const <LlmAttachment>[];
+    if (source.isEmpty && attachments.isEmpty) {
       setState(() =>
           _status = 'Nothing to send. Capture or type text first.');
       return;
@@ -256,7 +309,7 @@ class AiViewState extends State<AiView> implements KeyboardNavigableView {
         task: task,
         previousResult: refine ? _rephrasedText : null,
         remarks: remarks,
-        image: _screenshot,
+        attachments: attachments,
         cancel: cancel,
       );
       if (!mounted) return;
@@ -377,7 +430,7 @@ class AiViewState extends State<AiView> implements KeyboardNavigableView {
   }
 
   /// Keeps the result on screen for reading and dismisses the typing actions,
-  /// so a "circle to search" question does not end in an Approve prompt.
+  /// so a read-only question does not end in an Approve prompt.
   void _keepForReading() {
     setState(() => _status =
         'Result kept for reading. It is not typed anywhere — copy it if '
@@ -396,6 +449,7 @@ class AiViewState extends State<AiView> implements KeyboardNavigableView {
     setState(() {
       _rephrasedText = null;
       _screenshot = null;
+      _sendImageOverride = null;
       _status = null;
       _isBusy = false;
     });
@@ -803,38 +857,83 @@ class AiViewState extends State<AiView> implements KeyboardNavigableView {
   }
 
   Widget _buildScreenshotRow(bool canScreenshot) {
-    return Row(
+    final asImage = _sendScreenshotAsImage;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SizedBox(
-          height: 24,
-          width: 24,
-          child: Checkbox(
-            value: canScreenshot,
-            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            visualDensity: VisualDensity.compact,
-            onChanged: _isBusy
-                ? null
-                : (value) => setState(() {
-                      _includeScreenshot = value ?? false;
-                      if (!canScreenshot) _screenshot = null;
-                    }),
-          ),
+        Row(
+          children: [
+            SizedBox(
+              height: 24,
+              width: 24,
+              child: Checkbox(
+                value: canScreenshot,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+                onChanged: _isBusy
+                    ? null
+                    : (value) => setState(() {
+                          _includeScreenshot = value ?? false;
+                          if (!canScreenshot) _screenshot = null;
+                        }),
+              ),
+            ),
+            const SizedBox(width: 4),
+            Expanded(
+              child: GestureDetector(
+                onTap: _isBusy
+                    ? null
+                    : () => setState(() {
+                          _includeScreenshot = !canScreenshot;
+                          if (!_includeScreenshot) _screenshot = null;
+                        }),
+                child: const Text(
+                  'Attach a screenshot of the selected area',
+                  style: TextStyle(color: Color(0xFFA6ADC8), fontSize: 10),
+                ),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(width: 4),
-        Expanded(
-          child: GestureDetector(
-            onTap: _isBusy
-                ? null
-                : () => setState(() {
-                      _includeScreenshot = !canScreenshot;
-                      if (!_includeScreenshot) _screenshot = null;
-                    }),
-            child: const Text(
-              'Send window screenshot (circle-to-search)',
-              style: TextStyle(color: Color(0xFFA6ADC8), fontSize: 10),
+        if (canScreenshot)
+          Padding(
+            padding: const EdgeInsets.only(left: 28),
+            child: Row(
+              children: [
+                SizedBox(
+                  height: 20,
+                  width: 20,
+                  child: Checkbox(
+                    value: asImage,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.compact,
+                    onChanged: _isBusy
+                        ? null
+                        : (value) => setState(
+                              () => _sendImageOverride = value ?? false,
+                            ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: _isBusy
+                        ? null
+                        : () => setState(() => _sendImageOverride = !asImage),
+                    child: Text(
+                      asImage
+                          ? 'Send local OCR text only (no image)'
+                          : 'Attach the image and the local OCR text',
+                      style: const TextStyle(
+                        color: Color(0xFF9399B2),
+                        fontSize: 9,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-        ),
       ],
     );
   }

@@ -348,9 +348,13 @@ something useful with the answer.
   selected, it falls back to `Ctrl+A` + `Ctrl+C` for the whole document.
 - The **source text box** is fully editable — paste or type text instead of
   capturing it.
-- **Send window screenshot** (circle-to-search) attaches an image of the
-  selection region, falling back to the top of the window. Every provider
-  receives it as a vision input.
+- **Attach a screenshot of the selected area** sends an image of the selection
+  region, falling back to the top of the window. Tick *Send local OCR text only*
+  underneath to leave the picture out and send just the text Windows reads from
+  it — useful for text-only models, and nothing is uploaded except that text.
+- The screenshot is also read **locally** by the Windows OCR engine and the
+  recognised text is added to the prompt as a hint (marked *may contain OCR
+  mistakes*). Only languages installed on the machine can be recognised.
 
 #### Choose a task
 
@@ -404,8 +408,9 @@ Holds all configuration:
 
 - **TOTP secret** — Base32 secret, with show/hide toggle.
 - **LLM** — provider, base URL, API key, model, system prompt.
-- **AI behaviour** — *Open AI tab automatically when text is selected*, and
-  *Attach a screenshot of the target window to AI requests*.
+- **AI behaviour** — *Open AI tab automatically when text is selected*,
+  *Attach a screenshot of the selected area to AI requests*, and *Send only the
+  text read from the screenshot (local Windows OCR)*.
 - **KeePass** — database path, key file path, master password (DPAPI-encrypted,
   show/hide toggle), and a **Test** button.
 
@@ -553,7 +558,8 @@ Only what you explicitly send to the AI provider:
 - The system prompt (yours, or the built-in one).
 - The task you chose or typed.
 - The captured source text.
-- Optional: a PNG screenshot of the selection.
+- Optional: a PNG screenshot of the selection — unless you switch on
+  *Send only the text read from the screenshot*.
 
 **What never leaves your machine**
 
@@ -562,6 +568,8 @@ Only what you explicitly send to the AI provider:
 - Your KeePass database, paths, entry list, usernames, and passwords.
 - Your clipboard history.
 - Your TOTP secret.
+- The screenshots read by the local OCR — that happens entirely on your PC
+  through the Windows OCR engine.
 
 **About the API key**
 
@@ -608,6 +616,10 @@ Both directions need an upstream FFI addition to fix properly.
   selected by default on the Credentials tab.
 - **One match is used at a time.** With several matching entries, the best-scored
   one is selected.
+- **Local OCR depends on installed Windows language packs.** Only the
+  languages in *Settings → Time & language → Language* can be recognised, and
+  the engine drops some symbols (`/`, `@`), so the OCR text is a hint and never
+  replaces the image on its own.
 - **MobilePASS automation is out of scope.**
 - **Windows only.** The DPAPI secret encryption is Windows-specific; the
   non-Windows fallback is insecure and intended only for testing.
@@ -674,16 +686,19 @@ lib/
   core/
     keyboard_navigable.dart         interface for arrow/Enter navigation
     typing_guard.dart               low-level hook containing injected input
+    file_dialog.dart                native Open/Save dialogs (kdbx, csv, key)
   models/
     hotkey_binding.dart             parse / format / conflict-check hotkeys
     llm_provider.dart               provider enum, default URLs and models
   services/
     settings_service.dart           persisted config, DPAPI secret encryption
     keepass_service.dart            .kdbx access, scored matching, CRUD, sequences
+    import_csv.dart                 Chrome / Firefox / Excel password CSV parser
     llm_service.dart                OpenAI / Gemini / Anthropic clients, vision
     auto_type_executor.dart         KeePass-style sequence interpreter
     text_extractor.dart             clipboard-based selection capture
     screen_capture_service.dart     GDI window screenshot → PNG
+    ocr_service.dart                offline text recognition via Windows.Media.Ocr
   views/
     clipboard_view.dart             history, search, paste / type actions
     otp_view.dart                   TOTP display and actions

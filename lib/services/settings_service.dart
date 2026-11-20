@@ -19,6 +19,10 @@ class SettingsService {
   static const String _keyLlmProvider = 'LLM_PROVIDER';
   static const String _keyLlmSystemPrompt = 'LLM_SYSTEM_PROMPT';
   static const String _keyAiScreenshot = 'AI_CAPTURE_SCREENSHOT';
+
+  /// When true the screenshot is not sent; only the text read from it with
+  /// Windows OCR is used.
+  static const String _keyAiScreenshotAsImage = 'AI_SCREENSHOT_TEXT_ONLY';
   static const String _keyAiAutoCapture = 'AI_AUTO_CAPTURE_SELECTION';
   static const String _keyKeepassDbPath = 'KEEPASS_DB_PATH';
   static const String _keyKeepassMasterKey = 'KEEPASS_MASTER_KEY';
@@ -132,6 +136,16 @@ class SettingsService {
   bool get aiCaptureScreenshot =>
       _prefs?.getBool(_keyAiScreenshot) ?? false;
 
+  /// When true, the screenshot is not sent; only the text read from it with
+  /// Windows OCR is used.
+  ///
+  /// Default `false`: the image is attached **and** the OCR text is added to
+  /// the prompt as a hint. OCR is lossy (symbols such as `/` and `@` are
+  /// dropped, and only installed recogniser languages work), so it never
+  /// replaces the picture unless this flag is on.
+  bool get aiScreenshotAsImage =>
+      _prefs?.getBool(_keyAiScreenshotAsImage) ?? false;
+
   /// Whether the Shift+Space hotkey should open the AI tab when the focused
   /// window has selected text.
   bool get aiAutoCaptureSelection =>
@@ -145,6 +159,7 @@ class SettingsService {
     required LlmProvider llmProvider,
     String llmSystemPrompt = '',
     bool aiCaptureScreenshot = false,
+    bool aiScreenshotAsImage = false,
     bool aiAutoCaptureSelection = true,
     required String keepassDbPath,
     required String keepassMasterKey,
@@ -167,6 +182,7 @@ class SettingsService {
       _prefs!.setString(_keyLlmProvider, llmProvider.name),
       _prefs!.setString(_keyLlmSystemPrompt, llmSystemPrompt),
       _prefs!.setBool(_keyAiScreenshot, aiCaptureScreenshot),
+      _prefs!.setBool(_keyAiScreenshotAsImage, aiScreenshotAsImage),
       _prefs!.setBool(_keyAiAutoCapture, aiAutoCaptureSelection),
       _prefs!.setString(_keyKeepassDbPath, keepassDbPath),
       _prefs!.setString(_keyKeepassKeyFilePath, keepassKeyFilePath),

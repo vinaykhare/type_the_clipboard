@@ -30,7 +30,10 @@ flutter test
 - `lib/models/hotkey_binding.dart` — parses/formats hotkey strings (`ctrl+alt+space`), builds `hotkey_manager` `HotKey`s, detects duplicate combinations.
 - `lib/services/settings_service.dart` — persisted config (SharedPreferences) with DPAPI-encrypted KeePass master key.
 - `lib/services/keepass_service.dart` — opens `.kdbx` via `keepass_flutter`; matching, entry CRUD, save, Auto-Type sequence resolution.
-- `lib/services/llm_service.dart` — OpenAI-compatible, Gemini, and Anthropic wrappers; `call(text, task:)`, cancellation, vision, short errors.
+- `lib/services/llm_service.dart` — OpenAI-compatible, Gemini, and Anthropic wrappers; `call(text, task:, attachments:)`, cancellation, vision, short errors. `LlmAttachment` carries image bytes + media type; `openAiContentParts` / `geminiContentParts` / `anthropicContentParts` are static so the request shape is unit-testable.
+- `lib/services/ocr_service.dart` — offline OCR of a screenshot via Windows `Windows.Media.Ocr` (PowerShell `-EncodedCommand` bridge, 15 s timeout, returns `null` on any failure).
+- `lib/services/import_csv.dart` — Chrome / Firefox / Excel password CSV importer (skip only when title **and** username **and** password all match; otherwise `-1`, `-2`, … suffix).
+- `lib/core/file_dialog.dart` — native Open/Save dialogs (`comdlg32`) for `.kdbx`, `.csv` and key files; no `file_picker` dependency.
 - `lib/services/text_extractor.dart` — captures selected/all text from a target window using the clipboard (timeout-guarded, cancellable).
 - `lib/services/screen_capture_service.dart` — GDI window screenshot, BMP → PNG via `System.Drawing`.
 - `lib/startup_helper.dart` — `StartupHelper.setAutoStart(bool)` / `isAutoStartEnabled` via the `HKCU` `Run` key.
@@ -80,14 +83,25 @@ flutter test
   - The LLM returns only replacement text (wrapping quotes / code fences are stripped).
   - A follow-up remark box refines the current result (source + previous result + remarks).
   - Full LLM/HTTP failures are logged with `debugPrint`; the UI only shows a short message.
-  - Optional screenshot ("circle to search"): the AI tab can attach a GDI
-    screenshot of the selection region (falling back to the top of the window),
-    sent as a vision input to every provider. Toggle per request in the AI tab
-    or by default in Settings (`aiCaptureScreenshot`).
+  - Optional screenshot: the AI tab can attach a GDI screenshot of the
+    selection region (falling back to the top of the window). Toggle per request
+    in the AI tab or by default in Settings (`aiCaptureScreenshot`).
+  - Every screenshot is read **locally** first by `OcrService` (Windows
+    `Windows.Media.Ocr` through a PowerShell `-EncodedCommand` bridge — no
+    package, no upload, ~1.5 s for 1920×1080). The recognised text is appended
+    to the source under
+    `--- TEXT READ FROM THE SCREENSHOT (may contain OCR mistakes) ---` by
+    `AiViewState.mergeScreenshotText`, which drops an empty, duplicate or
+    sub-selection result.
+  - OCR is a **hint, not a replacement**: it loses symbols (`/`, `@`) and only
+    works for installed language packs, so the image is still sent unless
+    Settings `aiScreenshotAsImage` (key `AI_SCREENSHOT_TEXT_ONLY`) is on, or
+    the per-capture override under the screenshot row is ticked. If OCR returns
+    nothing, `_sendImageOverride` falls back to sending the image.
   - On approval, types the text back into the target window (replacing whatever was selected).
   - Result actions: **Replace selection / Type result** (real line breaks — Notepad,
     e-mail), **Type as chat** (line breaks as `Shift+Enter` — Webex, Teams, Slack),
-    **Copy**, and **Keep for reading** (a circle-to-search question needs no typing).
+    **Copy**, and **Keep for reading** (a read-only question needs no typing).
     The two typing buttons only appear when the captured window can take input;
     otherwise only Copy is offered, with a hint to re-open via `Ctrl+Alt+Space`.
   - Approval runs inside `TypingGuard`: injected keystrokes are tagged via
@@ -146,6 +160,9 @@ flutter test
     (`kimi-latest`), not the display name shown in dashboards.
   - "Open AI tab automatically when text is selected" (`aiAutoCaptureSelection`,
     default on) controls the `Ctrl+Alt+Space` behaviour above.
+  - "Send only the text read from the screenshot" (`aiScreenshotAsImage`,
+    key `AI_SCREENSHOT_TEXT_ONLY`, default **off**) drops the image and sends
+    only the local OCR text. See the OCR notes under the AI task tab.
   - KeePass master password and TOTP secret have working show/hide toggles.
   - **Keyboard shortcuts** section: three text fields (`_buildHotkeyField`) for
     show / credentials / OTP. Each shows the parsed combination live and flags
@@ -165,7 +182,21 @@ flutter test
 - The exe is `typecraft.exe`. Set it with `set_target_properties(... OUTPUT_NAME "typecraft")` in `windows/runner/CMakeLists.txt`; do **not** change `BINARY_NAME`/`project()` in `windows/CMakeLists.txt` — the Flutter build scaffolding resolves `$<TARGET_FILE_DIR:${BINARY_NAME}>` and fails if they differ from the project name.
 - KeePass integration uses `keepass_flutter` from git (`https://github.com/ManyMath/ManyKee.git`, path `packages/keepass_flutter`) because the pub.dev archive is missing the required Rust crate.
 - `keepass_flutter`'s FFI exposes **no** Auto-Type accessor (no `default_sequence`, no group `DefaultAutoTypeSequence`) even though `keepass-rs` parses it. A sequence stored natively in KeePassXC therefore cannot be read; this app stores its own in the entry attribute `AutoType` (`keepassAutoTypeKey` in `entry_form_dialog.dart`) and falls back to a non-submitting default. Fixing this properly needs an upstream FFI addition.
+- **Databases created by Typecraft are flagged as weak by KeePass 2.x.** The native
+  `kpxc_database_create` hardcodes `DatabaseConfig::default()`, whose KDF is
+  keepass-rs's Argon2d with `iterations: 50, memory: 1024 * 1024` (1 MiB). KeePass's
+  `Argon2Kdf.AreParametersWeak` flags anything with `iterations * memory < 2 * 64 MiB`,
+  so 50 MiB loses against the required 128 MiB and KeePass offers to "set them to the
+  current default values". KeePass's own defaults are 2 iterations × 64 MiB,
+  parallelism 2, Argon2 version 0x13. No Dart or FFI entry point lets us pass a
+  `DatabaseConfig`, so the fix needs a patched native build (or an upstream FFI change).
+  Likewise the FFI has no re-key / re-save API: `Database` objects parsed by
+  `Database.open` keep the *file's* `config`, so saving them again preserves the weak
+  KDF — only a database built with `Database::new(config)` carries the config we set.
 - `powershell -Command` treats everything after the script as commands, **not** `$args`. Pass values by interpolating quoted literals into the script (see `ScreenCaptureService._encodeScript`, `InputSimulator.hasSelectedText`).
 - The `WH_KEYBOARD_LL` hook in `TypingGuard` is thread-affine: install, run and unhook must stay inside one `scheduleMicrotask`.
+- `PowerShell -EncodedCommand` (base64 UTF-16LE) is the reliable way to run multi-line PowerShell from Dart; `-Command` mangles quoting. `OcrService` and the OCR test both use it.
+- Native tests (`test/keepass_*_test.dart`) need `keepass_flutter_native.dll` in the project root; it is git-ignored and produced by `flutter build windows`.
+- `flutter test` runs the live Windows OCR test in `test/ocr_service_test.dart`; it is skipped off Windows.
 - DPAPI encryption only works on Windows; the non-Windows fallback is insecure and intended for testing only.
 - MobilePASS automation is intentionally out of scope in this branch.

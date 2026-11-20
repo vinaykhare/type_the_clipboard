@@ -218,7 +218,7 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
 
   /// Hotkey entry point: when the target window has selected text, open the
   /// AI tab with that selection already captured and rephrased. Otherwise
-  /// fall back to the clipboard tab.
+  /// still open the AI tab, ready to paste or type into.
   Future<void> _showClipboardOrCaptureSelection() async {
     final hwnd = _lastTargetHwnd;
     final hasSelection = widget.settings.aiAutoCaptureSelection &&
@@ -226,7 +226,7 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
         await InputSimulator.hasSelectedText(hwnd);
 
     if (!hasSelection) {
-      await _showWindow(_clipboardTab);
+      await _showWindow(_aiTab);
       return;
     }
 
@@ -295,9 +295,10 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
     }
 
     // In-app keyboard navigation is disabled while the Settings form is open
-    // so arrow keys and Enter work normally inside text fields.
+    // and while a text field has focus: arrows move the caret / cycle the
+    // value there, so they must not switch tabs or move list selections.
     if (_tabIndex == _settingsTab) return false;
-
+    if (_isTextFieldFocused(event)) return false;
     if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
       _changeTab(-1);
       return true;
@@ -320,10 +321,9 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
     }
 
     // Credentials-only quick actions: "u" types the username, "p" the
-    // password of the highlighted entry. Ignored while a text field (search
-    // box, AI source, settings) has focus so typing still works normally.
+    // password of the highlighted entry. Text fields are excluded above, so
+    // typing in the search box still works normally.
     if (_tabIndex == _credentialsTab &&
-        !_isTextFieldFocused(event) &&
         (event.logicalKey == LogicalKeyboardKey.keyU ||
             event.logicalKey == LogicalKeyboardKey.keyP)) {
       final view = _currentNavigableView();
@@ -341,11 +341,18 @@ class _AutoTyperHomeState extends State<AutoTyperHome>
   }
 
   /// True when a text input currently owns the keyboard focus.
-  bool _isTextFieldFocused(KeyEvent event) {
-    final context = FocusManager.instance.primaryFocus?.context;
+  ///
+  /// `EditableText` registers its own focus node with the debug label
+  /// `EditableText`, which covers every `TextField` / `TextFormField` /
+  /// `SelectableText` even when the widget context is not resolvable.
+  static bool _isTextFieldFocused(KeyEvent event) {
+    final node = FocusManager.instance.primaryFocus;
+    if (node == null) return false;
+    if (node is EditableText) return true;
+    final label = node.debugLabel;
+    if (label != null && label.startsWith('EditableText')) return true;
+    final context = node.context;
     if (context == null) return false;
-    // EditableText is used by every TextField / TextFormField; its focus
-    // context sits inside an EditableText widget.
     return context.widget is EditableText ||
         context.findAncestorWidgetOfExactType<EditableText>() != null;
   }

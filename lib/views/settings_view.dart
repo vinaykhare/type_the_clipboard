@@ -1,8 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'package:type_the_clipboard/core/file_dialog.dart';
 import 'package:type_the_clipboard/models/hotkey_binding.dart';
 import 'package:type_the_clipboard/models/llm_provider.dart';
+import 'package:type_the_clipboard/services/import_csv.dart';
 import 'package:type_the_clipboard/services/keepass_service.dart';
 import 'package:type_the_clipboard/services/llm_service.dart';
 import 'package:type_the_clipboard/services/settings_service.dart';
@@ -39,14 +43,21 @@ class _SettingsViewState extends State<SettingsView> {
   bool _obscurePassword = true;
   bool _obscureApiKey = true;
   bool _captureScreenshot = false;
+  bool _screenshotAsImage = false;
   bool _autoCapture = true;
   bool _autoStart = false;
   String? _hotkeyError;
+  /// Set when Create database / Test Connection is pressed with an empty
+  /// master password; shown as a red `errorText` under the field.
+  String? _passwordError;
   LlmProvider _llmProvider = LlmProvider.openAiCompatible;
   String? _testMessage;
   bool _testing = false;
+  bool _creatingDb = false;
+  bool _createWithKeyFile = false;
   String? _llmTestMessage;
   bool _testingLlm = false;
+  bool _importing = false;
 
   @override
   void initState() {
@@ -59,6 +70,7 @@ class _SettingsViewState extends State<SettingsView> {
     _llmProvider = s.llmProvider;
     _llmPromptController = TextEditingController(text: s.llmSystemPrompt);
     _captureScreenshot = s.aiCaptureScreenshot;
+    _screenshotAsImage = s.aiScreenshotAsImage;
     _autoCapture = s.aiAutoCaptureSelection;
     _dbPathController = TextEditingController(text: s.keepassDbPath);
     _dbKeyFileController = TextEditingController(text: s.keepassKeyFilePath);
@@ -114,6 +126,10 @@ class _SettingsViewState extends State<SettingsView> {
   }
 
   Future<void> _save() async {
+    // A master password is mandatory whenever a KeePass database is set up.
+    final dbPath = _dbPathController.text.trim();
+    if (dbPath.isNotEmpty && !_requirePassword()) return;
+    if (dbPath.isNotEmpty) _passwordError = null;
     // Validate hotkeys: every field must parse and the three must be distinct.
     final bindings = <String, HotkeyBinding?>{
       'Show Typecraft': HotkeyBinding.parse(_hotkeyShowController.text),
@@ -151,6 +167,7 @@ class _SettingsViewState extends State<SettingsView> {
       llmProvider: _llmProvider,
       llmSystemPrompt: _llmPromptController.text.trim(),
       aiCaptureScreenshot: _captureScreenshot,
+      aiScreenshotAsImage: _screenshotAsImage,
       aiAutoCaptureSelection: _autoCapture,
       keepassDbPath: _dbPathController.text.trim(),
       keepassMasterKey: _dbPasswordController.text,
@@ -174,7 +191,26 @@ class _SettingsViewState extends State<SettingsView> {
     await windowManager.hide();
   }
 
+  /// A master password is mandatory for every KeePass operation, whether the
+  /// database already exists or is about to be created. Returns `true` and
+  /// paints a red error under the field when it is missing.
+  bool _requirePassword() {
+    if (_dbPasswordController.text.trim().isNotEmpty) {
+      if (_passwordError != null) setState(() => _passwordError = null);
+      return true;
+    }
+    setState(() {
+      _passwordError = 'Enter the master password to continue.';
+      _testMessage = null;
+    });
+    return false;
+  }
+
   Future<void> _testKeePass() async {
+    if (!_requirePassword()) return;
+    // Forget any handle opened earlier (possibly with another password), so
+    // the test really opens the file with what is in the field now.
+    KeePassService.closeAll();
     // Temporarily use the values from the text fields so the user can test
     // before saving.
     final testSettings = _KeePassSettingsOverlay(widget.settings, this);
@@ -233,6 +269,302 @@ class _SettingsViewState extends State<SettingsView> {
     }
   }
 
+  /// Opens a native dialog to pick an **existing** `.kdbx` file.
+  ///
+  /// Creating a database always goes through [createDatabase], which asks for
+  /// its own location, so this only ever opens an existing file.
+  Future<void> _browseDbPath() async {
+    final path = FileDialog.open(
+      title: 'Choose existing KeePass database',
+      filter: FileDialog.kdbxFilter,
+      initialDirectory: _directoryOf(_dbPathController.text) ??
+          _defaultKeepassDirectory(),
+    );
+    if (path == null || !mounted) return;
+    setState(() {
+      _dbPathController.text = path;
+      // A different database normally has its own key file.
+      if (_dbKeyFileController.text.trim().isNotEmpty) {
+        _dbKeyFileController.text = '';
+      }
+      _testMessage = null;
+    });
+  }
+
+  /// Opens a native dialog to fill the key-file path field.
+  Future<void> _browseKeyFile() async {
+    final path = FileDialog.open(
+      title: 'Choose KeePass key file',
+      filter: FileDialog.keyFilter,
+      initialDirectory: _directoryOf(_dbKeyFileController.text) ??
+          _directoryOf(_dbPathController.text),
+    );
+    if (path == null || !mounted) return;
+    setState(() {
+      _dbKeyFileController.text = path;
+      _testMessage = null;
+    });
+  }
+
+  /// Creates a brand-new `.kdbx` (plus a `.keyx` when key-file protection is
+  /// enabled) and fills the form so the user can test it and press Save.
+  Future<void> _createDatabase() async {
+    if (_creatingDb || _importing) return;
+    if (!_requirePassword()) return;
+    final password = _dbPasswordController.text;
+    final keyFileEnabled = _useKeyFile;
+
+    final dbPath = FileDialog.save(
+      title: 'Create KeePass database',
+      filter: FileDialog.kdbxFilter,
+      suggestedName: _suggestedDbName(),
+      initialDirectory: _directoryOf(_dbPathController.text) ??
+          _defaultKeepassDirectory(),
+    );
+    if (dbPath == null || !mounted) return;
+
+    var keyFilePath = '';
+    if (keyFileEnabled) {
+      keyFilePath = FileDialog.save(
+        title: 'Create or reuse key file',
+        filter: FileDialog.keyFilter,
+        suggestedName: '${_fileStem(dbPath)}.keyx',
+        initialDirectory: _directoryOf(dbPath),
+      ) ??
+          '${_withoutExtension(dbPath)}.keyx';
+    }
+
+    setState(() {
+      _creatingDb = true;
+      _testMessage = null;
+    });
+
+    try {
+      await KeePassService.createDatabase(
+        dbPath,
+        password: password,
+        keyFilePath: keyFileEnabled ? keyFilePath : null,
+      );
+      // The file was written. Forget cached handles so nothing stale is
+      // reused for the form's new path.
+      KeePassService.closeAll();
+      if (!mounted) return;
+      // Reopen the file once with exactly what was written to disk, so an
+      // unreadable database is reported here instead of the first time the
+      // user opens the tab. This bypasses the shared cache on purpose.
+      final verified = KeePassService.verifyOpen(
+        dbPath,
+        password: password,
+        keyFilePath: keyFileEnabled ? keyFilePath : null,
+      );
+      setState(() {
+        _creatingDb = false;
+        _dbPathController.text = dbPath;
+        _dbKeyFileController.text = keyFileEnabled ? keyFilePath : '';
+        // The form now points at a fresh database that opens with the entered
+        // password, so a "could not be opened" message left over from the
+        // previously configured database no longer applies.
+        _testMessage = verified
+            ? 'Database created at $dbPath. Press Save to use it.'
+            : 'Database created at $dbPath, but it could not be reopened. '
+                'Check the password and key file.';
+      });
+    } catch (e) {
+      debugPrint('[Settings] create database failed: $e');
+      if (!mounted) return;
+      setState(() {
+        _creatingDb = false;
+        _testMessage = 'Could not create the database: $e';
+      });
+    }
+  }
+
+  /// Imports a Chrome / Edge / Brave / Firefox password export (CSV) into the
+  /// configured database — creating one first when no database exists yet.
+  Future<void> _importPasswords() async {
+    if (_importing || _creatingDb) return;
+    if (!_requirePassword()) return;
+
+    final csvPath = FileDialog.open(
+      title: 'Import browser passwords',
+      filter: 'Password export (*.csv)\u0000*.csv\u0000'
+          'All files (*.*)\u0000*.*\u0000\u0000',
+      initialDirectory: _directoryOf(_dbPathController.text),
+    );
+    if (csvPath == null || !mounted) return;
+
+    setState(() => _importing = true);
+
+    try {
+      final file = File(csvPath);
+      final parsed = ImportCsv.parse(await file.readAsString());
+      if (parsed.credentials.isEmpty) {
+        if (!mounted) return;
+        setState(() => _importing = false);
+        _showTransientMessage(
+          'The file contained no importable credentials.',
+          isError: true,
+        );
+        return;
+      }
+
+      // No database configured? Offer to create one right here.
+      var dbPath = _dbPathController.text.trim();
+      var keyFilePath = _dbKeyFileController.text.trim();
+      if (dbPath.isEmpty) {
+        final created = await _createDatabaseForImport();
+        if (!mounted) return;
+        if (created == null) {
+          setState(() => _importing = false);
+          _showTransientMessage('Import cancelled: no database selected.',
+              isError: true);
+          return;
+        }
+        dbPath = created.dbPath;
+        keyFilePath = created.keyFilePath;
+      }
+
+      final target = _KeePassSettingsOverlay(widget.settings, this);
+      final service = KeePassService(target);
+      final summary = await service.importCredentials(parsed.credentials);
+      if (!mounted) return;
+      setState(() {
+        _importing = false;
+        _dbPathController.text = dbPath;
+        _dbKeyFileController.text = keyFilePath;
+      });
+      _showTransientMessage([
+        'Imported ${parsed.count} browser rows: ${summary.label}',
+        if (parsed.skipped > 0)
+          '${parsed.skipped} row(s) in the file were empty and skipped.',
+        'Press Save to store these settings.',
+      ].join('\n'));
+    } on FormatException catch (e) {
+      if (!mounted) return;
+      setState(() => _importing = false);
+      _showTransientMessage(
+        'Not a browser password export: ${e.message}',
+        isError: true,
+      );
+    } catch (e) {
+      debugPrint('[Settings] import failed: $e');
+      if (!mounted) return;
+      setState(() => _importing = false);
+      _showTransientMessage('Import failed: $e', isError: true);
+    }
+  }
+
+  /// Shows a message in a snackbar that dismisses itself.
+  ///
+  /// Import / create results used to be painted as persistent labels in the
+  /// form, which stayed on screen until the app was restarted.
+  void _showTransientMessage(String message, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          duration: Duration(seconds: isError ? 6 : 5),
+          backgroundColor:
+              isError ? const Color(0xFF7F2A2C) : const Color(0xFF2D4B36),
+          action: SnackBarAction(
+            label: 'Dismiss',
+            textColor: const Color(0xFFCDD6F4),
+            onPressed: () =>
+                ScaffoldMessenger.of(context).hideCurrentSnackBar(),
+          ),
+        ),
+      );
+  }
+
+  /// Asks for a path and creates an empty database for the import.
+  Future<({String dbPath, String keyFilePath})?> _createDatabaseForImport() async {
+    if (!_requirePassword()) return null;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E2E),
+        title: const Text(
+          'No database configured',
+          style: TextStyle(color: Color(0xFFCDD6F4), fontSize: 14),
+        ),
+        content: Text(
+          'Create a new KeePass database to hold the imported passwords?',
+          style: TextStyle(color: const Color(0xFFA6ADC8), fontSize: 12),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return null;
+
+    final dbPath = FileDialog.save(
+      title: 'Create KeePass database',
+      filter: FileDialog.kdbxFilter,
+      suggestedName: _suggestedDbName(),
+      initialDirectory: _defaultKeepassDirectory(),
+    );
+    if (dbPath == null) return null;
+
+    final useKeyFile = _useKeyFile;
+    final keyFilePath = useKeyFile
+        ? (_dbKeyFileController.text.trim().isEmpty
+            ? '${_withoutExtension(dbPath)}.keyx'
+            : _dbKeyFileController.text.trim())
+        : '';
+    // createDatabase writes the key file itself when it is missing.
+    await KeePassService.createDatabase(
+      dbPath,
+      password: _dbPasswordController.text,
+      keyFilePath: useKeyFile ? keyFilePath : null,
+    );
+    KeePassService.closeAll();
+    return (dbPath: dbPath, keyFilePath: keyFilePath);
+  }
+
+  bool get _useKeyFile => _createWithKeyFile;
+
+  String _suggestedDbName() {
+    final host = Platform.environment['USERNAME'] ?? 'Typecraft';
+    return host.isEmpty ? 'Typecraft.kdbx' : 'Typecraft-$host.kdbx';
+  }
+
+  static String? _directoryOf(String path) {
+    final trimmed = path.trim();
+    if (trimmed.isEmpty) return null;
+    final index = trimmed.lastIndexOf(RegExp(r'[\\/]'));
+    if (index <= 0) return null;
+    return trimmed.substring(0, index);
+  }
+
+  static String _fileStem(String path) {
+    final name = path.split(RegExp(r'[\\/]')).last;
+    final dot = name.lastIndexOf('.');
+    return dot > 0 ? name.substring(0, dot) : name;
+  }
+
+  static String _withoutExtension(String path) {
+    final dot = path.lastIndexOf('.');
+    final slash = path.lastIndexOf(RegExp(r'[\\/]'));
+    return dot > slash ? path.substring(0, dot) : path;
+  }
+
+  static String? _defaultKeepassDirectory() {
+    final userProfile = Platform.environment['USERPROFILE'];
+    if (userProfile == null || userProfile.isEmpty) return null;
+    final documents = '$userProfile\\Documents';
+    return Directory(documents).existsSync() ? documents : userProfile;
+  }
+
   Widget _buildCheckboxRow(
     String label,
     bool value,
@@ -259,7 +591,7 @@ class _SettingsViewState extends State<SettingsView> {
               child: Text(
                 label,
                 style: const TextStyle(
-                  color: Color(0xFFA6ADC8),
+                  color: Color(0xFFCDD6F4),
                   fontSize: 10,
                 ),
               ),
@@ -291,6 +623,8 @@ class _SettingsViewState extends State<SettingsView> {
     bool obscure = false,
     Widget? suffixIcon,
     int? maxLines,
+    String? errorText,
+    ValueChanged<String>? onChanged,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -298,6 +632,7 @@ class _SettingsViewState extends State<SettingsView> {
         controller: controller,
         obscureText: obscure,
         maxLines: maxLines ?? 1,
+        onChanged: onChanged,
         style: const TextStyle(
           color: Color(0xFFCDD6F4),
           fontSize: 12,
@@ -306,7 +641,9 @@ class _SettingsViewState extends State<SettingsView> {
           labelText: label,
           hintText: hint,
           labelStyle: const TextStyle(color: Color(0xFFA6ADC8), fontSize: 11),
-          hintStyle: const TextStyle(color: Color(0xFF585B70), fontSize: 11),
+          hintStyle: const TextStyle(color: Color(0xFF9399B2), fontSize: 11),
+          errorText: errorText,
+          errorStyle: const TextStyle(color: Color(0xFFE78284), fontSize: 10),
           filled: true,
           fillColor: const Color(0xFF181825),
           isDense: true,
@@ -316,11 +653,19 @@ class _SettingsViewState extends State<SettingsView> {
           ),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFF45475A)),
+            borderSide: BorderSide(
+              color: errorText == null
+                  ? const Color(0xFF45475A)
+                  : const Color(0xFFE78284),
+            ),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFF89B4FA)),
+            borderSide: BorderSide(
+              color: errorText == null
+                  ? const Color(0xFF89B4FA)
+                  : const Color(0xFFE78284),
+            ),
           ),
           suffixIcon: suffixIcon,
         ),
@@ -350,7 +695,7 @@ class _SettingsViewState extends State<SettingsView> {
           hintStyle: TextStyle(
             color: binding == null
                 ? const Color(0xFFE78284)
-                : const Color(0xFF585B70),
+                : const Color(0xFF9399B2),
             fontSize: 11,
           ),
           helperText: binding == null ? null : hint,
@@ -369,6 +714,44 @@ class _SettingsViewState extends State<SettingsView> {
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(8),
             borderSide: const BorderSide(color: Color(0xFF89B4FA)),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Folder button that sits next to a path field and opens a dialog.
+  ///
+  /// The chip is drawn by hand rather than through `OutlinedButton` / the
+  /// default `IconButton` styling, which resolved a nearly invisible icon on
+  /// this dark surface. A plain `Container` + `IconTheme` keeps the glyph
+  /// colour and size deterministic.
+  Widget _buildBrowseButton({
+    required String tooltip,
+    required VoidCallback onTap,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8, left: 6),
+      child: Tooltip(
+        message: tooltip,
+        child: Material(
+          color: const Color(0xFF313244),
+          borderRadius: BorderRadius.circular(8),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: onTap,
+            child: Container(
+              width: 40,
+              height: 39,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFF7F849C)),
+              ),
+              child: const IconTheme(
+                data: IconThemeData(color: Color(0xFFF5E0DC), size: 20),
+                child: Icon(Icons.folder_open),
+              ),
+            ),
           ),
         ),
       ),
@@ -509,9 +892,15 @@ class _SettingsViewState extends State<SettingsView> {
             (value) => setState(() => _autoCapture = value),
           ),
           _buildCheckboxRow(
-            'Attach a screenshot of the target window to AI requests',
+            'Attach a screenshot of the selected area to AI requests',
             _captureScreenshot,
             (value) => setState(() => _captureScreenshot = value),
+          ),
+          _buildCheckboxRow(
+            'Send only the text read from the screenshot (local Windows OCR, '
+            'text models, no image upload)',
+            _screenshotAsImage,
+            (value) => setState(() => _screenshotAsImage = value),
           ),
           Row(
             children: [
@@ -548,18 +937,38 @@ class _SettingsViewState extends State<SettingsView> {
               ),
             ),
           _buildSectionTitle('KeePass'),
-          _buildTextField(
-            _dbPathController,
-            'Database Path (.kdbx)',
+          Row(
+            children: [
+              Expanded(
+                child: _buildTextField(
+                  _dbPathController,
+                  'Database Path (.kdbx)',
+                ),
+              ),
+              _buildBrowseButton(tooltip: 'Choose database path', onTap: _browseDbPath),
+            ],
           ),
-          _buildTextField(
-            _dbKeyFileController,
-            'Key File Path (optional)',
+          Row(
+            children: [
+              Expanded(
+                child: _buildTextField(
+                  _dbKeyFileController,
+                  'Key File Path (optional)',
+                ),
+              ),
+              _buildBrowseButton(tooltip: 'Choose key file', onTap: _browseKeyFile),
+            ],
           ),
           _buildTextField(
             _dbPasswordController,
             'Master Password / Key',
             obscure: _obscurePassword,
+            errorText: _passwordError,
+            onChanged: (value) {
+              if (_passwordError != null && value.trim().isNotEmpty) {
+                setState(() => _passwordError = null);
+              }
+            },
             suffixIcon: IconButton(
               icon: Icon(
                 _obscurePassword ? Icons.visibility_off : Icons.visibility,
@@ -590,7 +999,67 @@ class _SettingsViewState extends State<SettingsView> {
                       : const Text('Test Connection'),
                 ),
               ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFFCDD6F4),
+                    side: const BorderSide(color: Color(0xFF45475A)),
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                  ),
+                  onPressed: (_creatingDb || _importing) ? null : _createDatabase,
+                  child: _creatingDb
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Create database'),
+                ),
+              ),
             ],
+          ),
+          const SizedBox(height: 6),
+          _buildCheckboxRow(
+            'Also create a .keyx key file (used together with the password)',
+            _createWithKeyFile,
+            (value) => setState(() => _createWithKeyFile = value),
+          ),
+          const Text(
+            'No KeePass database yet? Enter a path and a master password, then '
+            'press Create database. New KeePass users can start here.',
+            style: TextStyle(color: Color(0xFF9399B2), fontSize: 9),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFFCDD6F4),
+                    side: const BorderSide(color: Color(0xFF45475A)),
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                  ),
+                  onPressed: (_creatingDb || _importing) ? null : _importPasswords,
+                  icon: _importing
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.upload_file, size: 14),
+                  label: const Text('Import browser passwords (CSV)'),
+                ),
+              ),
+            ],
+          ),
+          const Text(
+            'Chrome / Edge / Brave: Settings > Passwords > Export. Firefox: '
+            'Logins > ... > Export. Rows that already exist with the same '
+            'title, username and password are skipped; a different password '
+            'gets a new entry titled -1, -2, ... New entries go to an '
+            '"Imported" group.',
+            style: TextStyle(color: Color(0xFF9399B2), fontSize: 9),
           ),
           if (_testMessage != null)
             Padding(
@@ -598,9 +1067,11 @@ class _SettingsViewState extends State<SettingsView> {
               child: Text(
                 _testMessage!,
                 style: TextStyle(
-                  color: _testMessage!.startsWith('KeePass opened')
-                      ? const Color(0xFFA6E3A1)
-                      : const Color(0xFFE78284),
+                  color: _testMessage!.startsWith('Could not') ||
+                          _testMessage!.startsWith('Error') ||
+                          _testMessage!.contains('could not be reopened')
+                      ? const Color(0xFFE78284)
+                      : const Color(0xFFA6E3A1),
                   fontSize: 11,
                 ),
               ),
@@ -610,7 +1081,7 @@ class _SettingsViewState extends State<SettingsView> {
           const Text(
             'Global combinations, usable from any application. Format: '
             'modifiers + key, e.g. ctrl+alt+space. Changes apply after Save.',
-            style: TextStyle(color: Color(0xFF585B70), fontSize: 9),
+            style: TextStyle(color: Color(0xFF9399B2), fontSize: 9),
           ),
           const SizedBox(height: 8),
           _buildHotkeyField(
@@ -632,7 +1103,7 @@ class _SettingsViewState extends State<SettingsView> {
             'In the Credentials tab: Up/Down to pick an entry, Enter to type '
             'the Auto-Type sequence, "u" for username only, "p" for password '
             'only.',
-            style: TextStyle(color: Color(0xFF585B70), fontSize: 9),
+            style: TextStyle(color: Color(0xFF9399B2), fontSize: 9),
           ),
           if (_hotkeyError != null)
             Padding(
@@ -721,6 +1192,7 @@ class _KeePassSettingsOverlay implements SettingsService {
     required LlmProvider llmProvider,
     String llmSystemPrompt = '',
     bool aiCaptureScreenshot = false,
+    bool aiScreenshotAsImage = false,
     bool aiAutoCaptureSelection = true,
     required String keepassDbPath,
     required String keepassMasterKey,
@@ -803,6 +1275,7 @@ class _LlmSettingsOverlay implements SettingsService {
     required LlmProvider llmProvider,
     String llmSystemPrompt = '',
     bool aiCaptureScreenshot = false,
+    bool aiScreenshotAsImage = false,
     bool aiAutoCaptureSelection = true,
     required String keepassDbPath,
     required String keepassMasterKey,
